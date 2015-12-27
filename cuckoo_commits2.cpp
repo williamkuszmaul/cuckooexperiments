@@ -657,8 +657,8 @@ public: // all public for now
       quick_lock(&bin_ids[new_bin]);
       quick_lock(&bin_ids[bucket]);
     } else {
-      quick_lock(&bin_ids[new_bin]);
       quick_lock(&bin_ids[bucket]);
+      quick_lock(&bin_ids[new_bin]);
     }
     slot_ids[new_bin][second_slot] += klockflag;
     slot_ids[bucket][*slot] += klockflag;
