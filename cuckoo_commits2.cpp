@@ -429,7 +429,7 @@ public: // all public for now
 	  }
 	  if (sorted_write_set[x].slot_id_ != nullptr) {
 	    if ((sorted_write_set[x].expected_slot_id_ | kclaimflag) !=
-		(*(sorted_write_set[x].slot_id_) | kclaimflag)) {
+		(*(sorted_write_set[x].slot_id_) | kclaimflag)) { 
 	      abort(sorted_write_set, write_set.size(), true); // unlock and unclaim all
 	      return false;
 	    }
