@@ -22,14 +22,14 @@ int inserts_per_kill = 2;
 int inserts_per_read = 1;
 int inserts_per_overwrite = 1;
 unsigned long long batch = 100; // this many operations are done in each commit cycle
-int trial_num = 10;
+int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
-int only_cycle = 0; // 0 to run both with and without fancy-mode, 1 to run just fancy-mode)
-int fancy = 0; // note that fancy = 1 does poorly with kickout chain as a system transaction (not shocking)
+int only_cycle = 1; // 0 to run both with and without fancy-mode, 1 to run just fancy-mode)
+int fancy = 0; 
 // 0 --> kickout counter (which I've previously shown performs well at high density)
 // 1 --> kickout counter, and fullness counter (fullness counter requires special end-proceduce and a bin could suffer long-term from one data race)
-// (1) does better than (0) in delete heavy load, unless we use system transaction kickout (which hurts (1))
+// (1) does better than (0) in delete heavy load
 // The point of fancy-mode is a) reduces aborts because less kickout-conflicts and b) yields shorter kickout chains
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
@@ -392,7 +392,11 @@ public: // all public for now
 	  answer = kickout_index[bucket] % bin_size;
 	  kickout_index[bucket] ++;
 	  depth++;
-	  if (depth == bin_size+1) cout<<"ALERT OF INF LOOP: something wrong here -- assertion should have broken... unless we're multi-threaded. Bin "<<bucket<<" thinks it is filled to "<<taken[bucket]<<endl;
+	  if (depth == bin_size+1) {
+	    cout<<"ALERT OF INF LOOP: something wrong here -- assertion should have broken... unless we're multi-threaded. Bin "<<bucket<<" thinks it is filled to "<<taken[bucket]<<endl;
+	    return 0; // to get out of inf loop... will not end up working out very well for us though
+	    // this can happen if there are enough race conditions that go wrong for a bin
+	  }
 	}
 	return answer;
       }
@@ -610,6 +614,9 @@ public: // all public for now
       elt3.expected_slot_id_ = new_id;
       elt3.expected_payload_ = 0;
       if (finished) {
+	if (fancy == 1) taken[elt3.bin_]++; // the first element of write_set2 will have been interpreted as a delete, decrementing this,
+	// so that it will ahve been incremented in chain, and decremented in the delete, meaning we have to increment it again to
+	// say that we're planning on using it for an insert.
 	write_set->push_back(elt1);
 	write_set->push_back(elt2);
 	write_set->push_back(elt3);

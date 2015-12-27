@@ -13,6 +13,17 @@
 #include <unistd.h>
 using namespace std;
 
+// Problems: retry_on does't turn off properly -- actually it seems like maybe it does? But why is it bad even on a single thread? Because the system transaction!
+// What is the deal with unconditionally locking a bin? When and why do we do that?
+//   Answer: Not used except maybe in non-system transaction chaining. In particular, in that case
+///  we do not need to prove that the bin doesn't contain a certain record (since we actually know
+//   where that record is.) So although we need to update the bin, we don't need to add its id to the read set
+//   Should update comments to reflect this.
+// Need to do basic clean up stuff
+// In current settings, hash1 is all messed up for some reason
+//    x is getting larger thant he number of hash pairs generated for the thread. I'll have to look into this later... In particular, what does inserts_per_overwrite have to do with this (seems like a silly and easy bug to fix). Ahh, it appears to have nothing to do with it... It's caued by insertsperkill being one!
+// Understand how elts are selected for updates, deletes. How often do these operatios fail?
+//    Have to be able to describe methodology for this in paper. I understand nwo.
 
 // Good memory fence source: http://preshing.com/20130922/acquire-and-release-fences/
 
@@ -356,19 +367,28 @@ public: // all public for now
 	  if (!sorted_write_set[x].just_lock_bin_) {
 	    if (!sorted_write_set[x].conditional_verify(prev_bin_id_same, retry_on)) {
 	      // includes built in retry mechanism for bin ids // only locks if in writeset
-	      // if we had a cycle in a path, this will catch it -- we're not allowed to edit the same slot twice in the same transaction
+	      // cout<<"Bin number "<<sorted_write_set[x].bin_<<endl;
+	      // cout<<"Aborted in primary check with prev_bin_id_same = "<<prev_bin_id_same<<endl;
+	      // cout<<"Thread id: "<<pthread_self()<<" whether for write "<<sorted_write_set[x].for_write_<<endl;
+	      // cout<<(sorted_write_set[x].expected_bin_id_ | klockflag) - klockflag<<" "<<(*(sorted_write_set[x].bin_id_) | klockflag) - klockflag<<endl;
+	      // cout<<(sorted_write_set[x].expected_bin_id_)<<" "<<(*(sorted_write_set[x].bin_id_))<<endl;
+
 	      abort(sorted_write_set, x, true); // x tells us up to what index we need to unlock
 	      return false;
 	    }
 	  } else {
+	    // cout<<"!!!!!! Did an unconditional lock !!!!!!!!!!!"<<endl;
 	    sorted_write_set[x].get_lock_unconditional(prev_bin_id_same);
 	  }
 
 	  if (sorted_write_set[x].slot_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_slot_id_ | flags));
 	  if (sorted_write_set[x].bin_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_bin_id_ | flags));
+	  
 	  //}
       }
-
+      // NOTE I THINK AT THIS POINT SLOT_ID_ SHOULD HAVE ITS FINAL VALUE, BUT WE WILL CONTINUE DOING NEWID UPDATES LATER THAT WAY
+      // IT'S HARD TO INTRODUCE BUGS WHEN MODIFYING RETRY METHOD OR WHEN TURNING OFF RETRIES
+      //cout<<"Planned new id: "<<new_id - flags<<endl;
       std::atomic_thread_fence(std::memory_order_release); // memory fence
       std::atomic_thread_fence(std::memory_order_acquire);
 
@@ -388,11 +408,15 @@ public: // all public for now
 	    bool need_retry = (sorted_write_set[x].expected_bin_id_ != *(sorted_write_set[x].bin_id_));
 	    if (prev_bin_id_same == true) need_retry = ((sorted_write_set[x].expected_bin_id_ | klockflag) != (*(sorted_write_set[x].bin_id_) | klockflag));
 	    if (need_retry) {
-	      abort(sorted_write_set, write_set.size(), false); // unlock all
+	      // cout<<"Thread id: "<<pthread_self()<<endl;
+	      //cout<<"Aborted with prev_bin_id_same="<<prev_bin_id_same<<endl;
+	      // cout<<(sorted_write_set[x].expected_bin_id_ | klockflag) - klockflag<<" "<<(*(sorted_write_set[x].bin_id_) | klockflag) - klockflag<<endl;
+	      // cout<<(sorted_write_set[x].expected_bin_id_)<<" "<<(*(sorted_write_set[x].bin_id_))<<endl;
+	      abort(sorted_write_set, write_set.size(), false); // unlock all but do not release claims!
 	      LogElt elt = sorted_write_set[x];
 	      uint64_t hash1 = elt.bin_, hash2 = elt.new_entry_, bin_id = 0, slot_id = 0, slot = 0, payload = 0;
 	      if (!retry_on || find_record(hash1, hash2, &bin_id, &slot_id, &slot, &payload)) {
-		abort(sorted_write_set, 0, true); // unlock all
+		abort(sorted_write_set, 0, true); // unclaim all
 		if (retry_on) cout<<"Read case broke2"<<endl;
 		return false; // record state of existance changed
 	      }
@@ -406,7 +430,7 @@ public: // all public for now
 	  if (sorted_write_set[x].slot_id_ != nullptr) {
 	    if ((sorted_write_set[x].expected_slot_id_ | kclaimflag) !=
 		(*(sorted_write_set[x].slot_id_) | kclaimflag)) {
-	      abort(sorted_write_set, write_set.size(), true); // unlock all
+	      abort(sorted_write_set, write_set.size(), true); // unlock and unclaim all
 	      return false;
 	    }
 	  }
@@ -443,6 +467,7 @@ public: // all public for now
     //assert(is_all_unlocked(write_set));
     //cout<<"Not aborted"<<endl;
     *worker_id = new_id - flags;
+    //cout<<"New id: "<<new_id - flags<<endl;
     return true;
   }
 
@@ -643,8 +668,8 @@ public: // all public for now
 
   // system transaction kickout
   // does kickout chain as system transaction
-  // uses claim system to reserve kickout path, but avoids claim contention by performing kickout chain life
-  // only two locks are held at a time
+  // uses claim system to reserve kickout path, but avoids claim contention by performing kickout chain live
+  // only two bin locks are held at a time
   // leaves first position in chain claimed for function caller to use
   bool kickout_now(uint64_t bucket, uint64_t* slot, uint64_t depth) {
     if (depth > maxchain) assert(1 == 2);
@@ -685,7 +710,7 @@ public: // all public for now
 
   // insertion using live kickout chain
   int chain_live_kickout(int bucket, int other_hash, vector <LogElt>* write_set, int thread_id,
-			 uint64_t payload_entry) { // Inserts -- goes down Cuckoo Chain as needed; returns length of resulting Cuckoo Chain.
+			 uint64_t payload_entry) {
     //cout<<"Insert attempt"<<endl;
     uint64_t slot_id, bin_id1 = 0, bin_id2 = 0, slot, payload = 0;
     bool quit1 = false, quit2 = false;
@@ -703,6 +728,9 @@ public: // all public for now
       return 0;
     }
     // need to verify it's not present
+    // cout<<"Will be waiting for: "<<bin_id1<<" "<<bin_id2<<endl;
+    // cout<<bucket<<" bin_id1?"<<endl;
+    // cout<<other_hash<<" bin_id2?"<<endl;
     LogElt entry1 = LogElt(other_hash, 0, bucket, bin_id2, 0, &bin_ids[other_hash],
 			   nullptr, payload, payload, false, this); //verifying record not present
     LogElt entry2 = LogElt(bucket, 0, other_hash, bin_id1, 0, &bin_ids[bucket],
@@ -1016,6 +1044,8 @@ public: // all public for now
 	  number_used++;
 	  Op next = Op(pairs[2*x], pairs[2*x+1], 4);
 	  operation_set.push_back(next);
+	  assert(next.hash1_ >= 0);
+	  assert(next.hash2_ >= 0);
 	}
 	if (number_used >= batch) {
 	  x++;
@@ -1041,6 +1071,7 @@ public: // all public for now
 	    Op next = Op(pairs[2*index], pairs[2*index+1], 3);
 	    operation_set.push_back(next);
 	    number_used++;
+
 	  }
 	}
 	if (number_used >= batch) {
@@ -1060,7 +1091,7 @@ public: // all public for now
       }
 
       // build write and read sets
-      //std::stable_sort (operation_set.begin(), operation_set.end(), Op::compare); //TODO: DELETE THIS AND FIX DELETES AND OVERWRITE STRATEGY TO MATCH PAPER
+      //std::stable_sort (operation_set.begin(), operation_set.end(), Op::compare); 
       bool claim_contention_abort = false;
       for (int j = 0; j < operation_set.size(); j++) {
 	Op elt = operation_set[j];
@@ -1073,7 +1104,9 @@ public: // all public for now
 	if (elt.operation_type_ == 3) {
 	  no_claim_contention = increment_payload(elt.hash1_, elt.hash2_, &write_set, thread_id);
 	}
-	if (elt.operation_type_ == 4) insert(elt.hash1_, elt.hash2_, &write_set, thread_id);
+	if (elt.operation_type_ == 4) {
+	  insert(elt.hash1_, elt.hash2_, &write_set, thread_id);
+	}
 	if (no_claim_contention == false) {
 	  claim_contention_abort = true;
 	  break;
@@ -1116,6 +1149,7 @@ public: // all public for now
       number_used = 0;
       canceled_inserts[thread_id][1] = 0;
       transaction_pairs.resize(0);
+      //cout<<"End of commit cycle ----------------"<<endl;
     }
   }
 
