@@ -24,7 +24,7 @@ int inserts_per_kill = 2;
 int inserts_per_read = 1;
 int inserts_per_overwrite = 1;
 unsigned long long batch = 100; // this many operations are done in each commit cycle
-int trial_num = 10;
+int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
 int only_cycle = 0; // 0 to run both with and without fancy-mode, 1 to run just fancy-mode)
@@ -285,6 +285,20 @@ public: // all public for now
       }
     }
 
+  }
+
+
+  // aborts unsorted writeset; assumes nothing is locked, and we aborted because of claim contention for kill or increment
+  void abort_unsorted_writeset(vector <LogElt> write_set, bool unclaim) { // uses unsorted write set
+    if (unclaim) {
+      for (uint64_t x = 0; x < write_set.size(); x++) {
+	if (write_set[x].for_write_ && write_set[x].slot_id_ != nullptr) {
+	  assert((*write_set[x].slot_id_ & kclaimflag) != 0);
+	  (*write_set[x].slot_id_) = ((*write_set[x].slot_id_) - kclaimflag);
+	  assert((*write_set[x].slot_id_ & kclaimflag) == 0);
+	}
+      }
+    }
   }
 
   bool is_all_unlocked(vector <LogElt> write_set) { // only used for single thread testing!
@@ -798,7 +812,8 @@ public: // all public for now
     return answer;
   }
 
-  void kill(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
+  // if false, need to abort entire transaction!
+  bool kill(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
     uint64_t slot_id, bin_id1 = 0, bin_id2, slot, payload = 0;
     bool tried_bin = false;
     while (!tried_bin) {
@@ -810,9 +825,12 @@ public: // all public for now
 	    entry.bin_id_ = nullptr;
 	    write_set->push_back(entry);
 	    canceled_inserts[thread_id][1]++;
-	    return;  // doesn't need to update bin id
+	    return true;  // doesn't need to update bin id
 	  }
 	}
+	// If you get here, then the slot was claimed, and its time to abort the entire transaction
+	cout<<"kill contention abort!"<<endl;
+	return false;
       } else {
 	tried_bin = true;
       }
@@ -831,9 +849,12 @@ public: // all public for now
 	    write_set->push_back(entry);
 	    //write_set->push_back(bin_entry);
 	    canceled_inserts[thread_id][1]++;
-	    return;  // doesn't need to update bin id
+	    return true;  // doesn't need to update bin id
 	  }
 	}
+		cout<<"kill contention abort!"<<endl;
+	// If you get here, then the slot was claimed, and its time to abort the entire transaction
+	return false;
       } else {
 	tried_bin = true;
       }
@@ -845,10 +866,12 @@ public: // all public for now
 			       0, 0 , false, this);
     write_set->push_back(new_entry1);
     write_set->push_back(new_entry2);
+    return true;
   }
 
+  // If false, need to abort entire transaction!
   // just very slightly changed kill
-  void increment_payload(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
+  bool increment_payload(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
     uint64_t slot_id, bin_id1 = 0, bin_id2, slot, payload = 0;
     bool tried_bin = false;
     while (!tried_bin) {
@@ -860,9 +883,12 @@ public: // all public for now
 	    assert(is_claimed(*entry.slot_id_));
 	    entry.bin_id_ = nullptr;
 	    write_set->push_back(entry);
-	    return; // doesn't need to update bin id
+	    return true; // doesn't need to update bin id
 	  }
 	}
+	cout<<"kill contention abort!"<<endl;
+	// If you get here, then the slot was claimed, and its time to abort the entire transaction
+	return false;
       } else {
 	tried_bin = true;
       }
@@ -876,9 +902,12 @@ public: // all public for now
 	    LogElt entry = LogElt(hash2, slot, hash1, bin_id2, slot_id, payload, payload + 1, true, this);
 	    entry.bin_id_ = nullptr;
 	    write_set->push_back(entry);
-	    return;  // doesn't need to update bin id
+	    return true;  // doesn't need to update bin id
 	  }
 	}
+	cout<<"kill contention abort!"<<endl;
+	// If you get here, then the slot was claimed, and its time to abort the entire transaction
+	return false;
       } else {
 	tried_bin = true;
       }
@@ -890,6 +919,7 @@ public: // all public for now
 			       0, 0 , false, this);
     write_set->push_back(new_entry1);
     write_set->push_back(new_entry2);
+    return true;
   }
 
   // just very slightly changed overwrite
@@ -1030,18 +1060,35 @@ public: // all public for now
       }
 
       // build write and read sets
-      std::stable_sort (operation_set.begin(), operation_set.end(), Op::compare);
+      //std::stable_sort (operation_set.begin(), operation_set.end(), Op::compare); //TODO: DELETE THIS AND FIX DELETES AND OVERWRITE STRATEGY TO MATCH PAPER
+      bool claim_contention_abort = false;
       for (int j = 0; j < operation_set.size(); j++) {
 	Op elt = operation_set[j];
+	bool no_claim_contention = true;
 	//cout<<thread_id<<" "<<elt.hash1_<<" "<<elt.hash2_<<" "<<elt.operation_type_<<endl;
 	if (elt.operation_type_ == 1) read(elt.hash1_, elt.hash2_, &write_set, thread_id);
-	if (elt.operation_type_ == 2) kill(elt.hash1_, elt.hash2_, &write_set, thread_id);
-	if (elt.operation_type_ == 3) increment_payload(elt.hash1_, elt.hash2_, &write_set, thread_id);
+	if (elt.operation_type_ == 2) {
+	  no_claim_contention =  kill(elt.hash1_, elt.hash2_, &write_set, thread_id);
+	}
+	if (elt.operation_type_ == 3) {
+	  no_claim_contention = increment_payload(elt.hash1_, elt.hash2_, &write_set, thread_id);
+	}
 	if (elt.operation_type_ == 4) insert(elt.hash1_, elt.hash2_, &write_set, thread_id);
+	if (no_claim_contention == false) {
+	  claim_contention_abort = true;
+	  break;
+	}
       }
-
+      
       // commit phase
-      bool aborted = !commit(write_set, &worker_id);
+      bool aborted = false;
+      if (claim_contention_abort) {
+	cout<<"Claim contention abort!"<<endl;
+	aborted = true;
+	abort_unsorted_writeset(write_set, true);
+      } else {
+	aborted = !commit(write_set, &worker_id);
+      }
       if (aborted) { // need to retry
 	//cout<<"Attempted abort"<<endl;
 	if (times_tried < 20) {
