@@ -124,6 +124,7 @@ public: // all public for now
       while (!grabbed) {
 	expected_bin_id_ = *bin_id_;
 	while ((expected_bin_id_ & klockflag) != 0) expected_bin_id_ = *bin_id_;
+	// ---------------------------------------------------- SHOULD DO SOME SORT OF PAUSE IN ABOVE LOOP -------------------------------------
 	uint64_t id_guess = expected_bin_id_;
 	grabbed = (*bin_id_).compare_exchange_weak(id_guess, id_guess | klockflag);
       }
@@ -299,7 +300,7 @@ public: // all public for now
     std::atomic_thread_fence(std::memory_order_release); // memory fence
     std::atomic_thread_fence(std::memory_order_acquire);
     bool terminate = false;
-    for (uint64_t x = 0; x < write_set.size(); x++) { // just for sake of testing
+    for (uint64_t x = 0; x < write_set.size(); x++) { // just for sake of testing to make sure same record not updated twice in same transaction
       for (uint64_t y = x + 1; y < write_set.size(); y++) {
 	if (write_set[x].for_write_ && write_set[y].for_write_ &&
 	                            write_set[x].slot_id_ != nullptr && write_set[y].slot_id_ != nullptr &&
@@ -326,7 +327,8 @@ public: // all public for now
       new_id = 0;
       try_all_again = false;
       for (uint64_t x = 0; x < write_set.size(); x++) {
-	if (sorted_write_set[x].for_write_ || 1==1) {
+	//	if (sorted_write_set[x].for_write_ || 1==1) { // By allowing read set elements through, we do a local retry for them
+	// as we lock the writes. 
 	  bool prev_bin_id_same = false;
 	  // check if we've already locked bin
 	  if (sorted_write_set[x].bin_id_ != nullptr) {
@@ -339,7 +341,7 @@ public: // all public for now
 	  }
 	  if (!sorted_write_set[x].just_lock_bin_) {
 	    if (!sorted_write_set[x].conditional_verify(prev_bin_id_same, retry_on)) {
-	      // includes built in retry mechanism for bin ids
+	      // includes built in retry mechanism for bin ids // only locks if in writeset
 	      // if we had a cycle in a path, this will catch it -- we're not allowed to edit the same slot twice in the same transaction
 	      abort(sorted_write_set, x, true); // x tells us up to what index we need to unlock
 	      return false;
@@ -350,7 +352,7 @@ public: // all public for now
 
 	  if (sorted_write_set[x].slot_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_slot_id_ | flags));
 	  if (sorted_write_set[x].bin_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_bin_id_ | flags));
-	}
+	  //}
       }
 
       std::atomic_thread_fence(std::memory_order_release); // memory fence
@@ -449,12 +451,12 @@ public: // all public for now
     return success;
   }
 
-  void get_claim(atomic <uint64_t>* num, uint64_t* final_id) {
-    int attempts = 0;
-    while (!try_to_claim(num, final_id)) {
-      attempts++;
-    }
-  }
+  // void get_claim(atomic <uint64_t>* num, uint64_t* final_id) {
+  //   int attempts = 0;
+  //   while (!try_to_claim(num, final_id)) {
+  //     attempts++;
+  //   }
+  // }
 
   int first_empty_position(int bucket) { //First empty position if bucket is not full; -1 if bucket is full.
     for(int x=0; x<bin_size; x++) {
@@ -620,6 +622,7 @@ public: // all public for now
     while (!grabbed) {
       expected = *id;
       while ((expected & klockflag) != 0) expected = *id;
+      // ---------------------------------------------------- SHOULD DO SOME SORT OF PAUSE IN ABOVE LOOP -------------------------------------
       grabbed = (*id).compare_exchange_weak(expected, expected | klockflag);
     }
   }
@@ -701,14 +704,14 @@ public: // all public for now
     LogElt bin_entry = new_entry;
     new_entry.bin_id_ = nullptr; // it's already in write set
     write_set->push_back(new_entry);
-    return 1; // later should make return path length
+    return 1; // later should make return path length if I want to collect data on that
   }
 
   int chain(int bucket, int other_hash, int depth, vector <LogElt>* write_set, int thread_id,
 	    uint64_t payload_entry) { // Inserts -- goes down Cuckoo Chain as needed; returns length of resulting Cuckoo Chain.
     if ((uint64_t) depth > maxchain) {
-      assert(1 == 2);
       cout<<"LEGIT ABORT"<<endl;
+      assert(1 == 2);
       return 0;
     }
     //cout<<"Insert attempt"<<endl;
