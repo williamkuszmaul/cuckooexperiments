@@ -921,7 +921,7 @@ int main() {
 	<<" max chain: "<<maxchain
 	<<" balance on: "<<balance
 	<<" cycle-kick on: "<<type<<endl;
-    cout<<"Average aborts: "<<getav(aborts);
+    cout<<"Average aborts: "<<getav(aborts)<<endl;
   }
   return 0;
 }

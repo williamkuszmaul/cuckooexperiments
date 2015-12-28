@@ -38,12 +38,9 @@ unsigned long long batch = 100; // this many operations are done in each commit 
 int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
-int only_cycle = 0; // 0 to run both with and without fancy-mode, 1 to run just fancy-mode)
+int only_cycle = 0; // 0 to run both with and without cycle-kick, 1 to run just cyclekick
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
-
-int fancy = 0;
-// 0 --> kickout counter // Actually, 0 is your only option :P
 
 #define klockflag (((uint64_t)1)<<31)
 #define kclaimflag (((uint64_t)1)<<32)
@@ -68,7 +65,6 @@ public: // all public for now
     uint64_t slot_;
     int new_entry_; // the other hashed bin
     cuckoo_table* owner_;
-    bool special_fancy_; // whether or not we need to do something special in case of abort
     std::atomic<uint64_t> *slot_id_;
     std::atomic<uint64_t> *bin_id_;
     uint64_t expected_slot_id_;
@@ -95,7 +91,6 @@ public: // all public for now
       for_write_ = for_write;
       bin_id_ = current_bin_id;
       slot_id_ = current_slot_id;
-      special_fancy_ = false;
       assert((expected_bin_id & klockflag) == 0);
       assert((expected_slot_id & klockflag) == 0);
       just_lock_bin_ = false;
@@ -117,7 +112,6 @@ public: // all public for now
       expected_payload_ = expected_payload;
       new_payload_ = new_payload;
       slot_id_ = &(owner_->slot_ids[bin_][slot_]);
-      special_fancy_ = false;
       assert((expected_bin_id & klockflag) == 0);
       assert((expected_slot_id & klockflag) == 0);
       just_lock_bin_ = false;
@@ -510,12 +504,10 @@ public: // all public for now
     int use_empty = first_empty_position(bucket);
     if (use_empty != -1) return use_empty;
     if (cyclekick) {
-      if (fancy == 0) { // Actually, is only option for fancy right now
-	int answer = kickout_index[bucket];
-	kickout_index[bucket]++;
-	//int answer = atomic_fetch_add(&kickout_index[bucket], 1);
-	return answer % bin_size;
-      }
+      int answer = kickout_index[bucket];
+      kickout_index[bucket]++;
+      //int answer = atomic_fetch_add(&kickout_index[bucket], 1);
+      return answer % bin_size;
     }
     int answer = rand() % bin_size; // random walk strategy (simplest functional strategy)
     return answer;
@@ -1294,9 +1286,8 @@ int main() {
 	<<" trials: "<<trial_num
 	<<" max chain: "<<maxchain
 	<<" balance on: "<<balance
-	<<" cycle-kick on: "<<type
-	<<" kickout fancyness: "<< fancy <<endl;
-    cout<<"Average aborts: "<<getav(aborts);
+	<<" cycle-kick on: "<<type<<endl;
+    cout<<"Average aborts: "<<getav(aborts)<<endl;
   }
   return 0;
 }
