@@ -1270,10 +1270,10 @@ int main() {
     vector <int> aborts(trial_num);
     double av_collisions = 0;
     for(int trial=0; trial < trial_num; trial++) {
-      cuckoo_table table1;
-      if (type == 0) table1.cyclekick = false;
-      if (type == 1) table1.cyclekick = true;
-      aborts[trial] = table1.run();
+      cuckoo_table *table1 = new cuckoo_table();
+      if (type == 0) table1->cyclekick = false;
+      if (type == 1) table1->cyclekick = true;
+      aborts[trial] = table1->run();
     }
     cout<<" bin size: "<<bin_size
 	<<" bin number: "<<bin_num
