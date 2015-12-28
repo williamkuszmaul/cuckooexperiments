@@ -291,7 +291,8 @@ public: // all public for now
 	if (write_set[x].for_write_ && write_set[x].slot_id_ != nullptr) {
 	  assert((*write_set[x].slot_id_ & kclaimflag) != 0);
 	  (*write_set[x].slot_id_) = ((*write_set[x].slot_id_) - kclaimflag);
-	  assert((*write_set[x].slot_id_ & kclaimflag) == 0);
+	  //assert((*write_set[x].slot_id_ & kclaimflag) == 0); Technically not required since the claim could have been taken
+	  // up by someone else between the previous line and this line.
 	}
       }
     }

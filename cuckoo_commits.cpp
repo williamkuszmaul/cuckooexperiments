@@ -25,12 +25,7 @@ unsigned long long batch = 100; // this many operations are done in each commit 
 int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
-int only_cycle = 0; // 0 to run both with and without fancy-mode, 1 to run just fancy-mode)
-int fancy = 0; 
-// 0 --> kickout counter (which I've previously shown performs well at high density)
-// 1 --> kickout counter, and fullness counter (fullness counter requires special end-proceduce and a bin could suffer long-term from one data race)
-// (1) does better than (0) in delete heavy load
-// The point of fancy-mode is a) reduces aborts because less kickout-conflicts and b) yields shorter kickout chains
+int only_cycle = 0; // 0 to run both with and without cycle-kick mode, 1 to run just cycle-kick mode
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
 
@@ -41,12 +36,11 @@ public: // all public for now
   int other_bin[bin_num][bin_size]; // pairs of hashes act as keys; for each record, this stores its other hash; empty slot --> -1
   uint64_t payloads[bin_num][bin_size]; // a payload for each slot
   atomic <int> kickout_index[bin_num]; // also known as kickout counter
-  atomic <int> taken[bin_num];
   int canceled_inserts[threads][2]; // 0 -> actual count, 1 -> temporary count for current commit phase, -1 for an insert
   vector <int> pairs_inserted; // the pairs that can potentially be inserted
   std::atomic<uint64_t> slot_ids[bin_num][bin_size];
   std::atomic<uint64_t> bin_ids[bin_num];
-  bool cyclekick; // whether to use fancy option
+  bool cyclekick; // whether to use cycle-kick option
 
 
   // Defining the write and read sets (which are merged as one thing here) =======================================================
@@ -58,7 +52,6 @@ public: // all public for now
     uint64_t slot_;
     int new_entry_; // the other hashed bin
     cuckoo_table* owner_;
-    bool special_fancy_; // whether or not we need to do something special in case of abort
     std::atomic<uint64_t> *slot_id_;
     std::atomic<uint64_t> *bin_id_;
     uint64_t expected_slot_id_;
@@ -85,7 +78,6 @@ public: // all public for now
       for_write_ = for_write;
       bin_id_ = current_bin_id;
       slot_id_ = current_slot_id;
-      special_fancy_ = false;
       just_lock_bin_ = false;
       assert((expected_bin_id & klockflag) == 0);
       assert((expected_slot_id & klockflag) == 0);
@@ -107,7 +99,6 @@ public: // all public for now
       expected_payload_ = expected_payload;
       new_payload_ = new_payload;
       slot_id_ = &(owner_->slot_ids[bin_][slot_]);
-      special_fancy_ = false;
       just_lock_bin_ = false;
       assert((expected_bin_id & klockflag) == 0);
       assert((expected_slot_id & klockflag) == 0);
@@ -184,9 +175,6 @@ public: // all public for now
 	  *slot_id_ = temp_id;
 	  owner_->other_bin[bin_][slot_] = new_entry_;
 	  owner_->payloads[bin_][slot_] = new_payload_;
-	  if (new_entry_ = -1 && new_payload_ == 0) // for deletes for fancy = 1 case
-	    //owner_->taken[bin_]--;
-	    atomic_fetch_add(&owner_->taken[bin_], -1);
 	}
       }
     }
@@ -227,14 +215,6 @@ public: // all public for now
 	}
       }
       write_set[x].unlock(!prev_bin_id_same);
-    }
-    if (fancy == 1) {
-      for (uint64_t x = 0; x < write_set.size(); x++) {
-	if (write_set[x].special_fancy_) {
-	  //taken[write_set[x].bin_]--;
-	  atomic_fetch_add(&taken[write_set[x].bin_], -1);
-	}
-      }
     }
   }
 
@@ -359,53 +339,11 @@ public: // all public for now
   // Here we pick which element to kick out of the bucket
   int pick_slot(int bucket) {
     if (cyclekick) {
-      if (fancy == 0) {
-	int answer = kickout_index[bucket];
-	kickout_index[bucket]++;
-	//int answer = atomic_fetch_add(&kickout_index[bucket], 1);
-	return answer % bin_size;
-      }
-      if (fancy == 1) {
-	// taken[bucket] is how many slots would be full if all inserts had committed
-	// (deletes don't update it until after committing)
-	// if taken[bucket] < full, then we use the (claimed-fullness - actual-fullness)th empty slot
-	// Otherwise, we index the kickout counter until we get to a non-empty slot and use that
-	if (taken[bucket] < bin_size) {
-	  int actual_count = 0;
-	  for (int x = 0; x < bin_size; x++) {
-	    if (other_bin[bucket][x] != -1) actual_count++;
-	  }
-	  int empty_index = taken[bucket] - actual_count;
-	  int empty_seen = 0;
-	  for (int x = 0; x < bin_size; x++) {
-	    if (other_bin[bucket][x] == -1) {
-	      empty_seen++;
-	      if (empty_seen >= empty_index + 1) {
-		//taken[bucket]++;
-		//atomic_fetch_add(&taken[bucket], 1);
-		return x;
-	      //}
-	      }
-	    }
-	  }
-	}
-	int answer = kickout_index[bucket] % bin_size;
-	kickout_index[bucket] ++;
-	int depth = 0;
-	while (other_bin[bucket][answer] == -1) { //important step! (easy to forget)
-	  answer = kickout_index[bucket] % bin_size;
-	  kickout_index[bucket] ++;
-	  depth++;
-	  if (depth == bin_size+1) {
-	    cout<<"ALERT OF INF LOOP: something wrong here -- assertion should have broken... unless we're multi-threaded. Bin "<<bucket<<" thinks it is filled to "<<taken[bucket]<<endl;
-	    return 0; // to get out of inf loop... will not end up working out very well for us though
-	    // this can happen if there are enough race conditions that go wrong for a bin
-	  }
-	}
-	return answer;
-      }
+      int answer = kickout_index[bucket];
+      kickout_index[bucket]++;
+      //int answer = atomic_fetch_add(&kickout_index[bucket], 1);
+      return answer % bin_size;
     }
-
     int answer = rand() % bin_size; // random walk strategy (simplest and most standard strategy)
     int temp = 0;
     while (other_bin[bucket][answer] != -1 && first_empty_position(bucket) != -1) {
@@ -427,11 +365,6 @@ public: // all public for now
   }
 
   int pick_bucket_balance(int choice1, int choice2, int *touches) { //Sticks in emptier of the two buckets
-    if (fancy == 1 && cyclekick) {
-      *touches += 2;
-      if (taken[choice1] < taken[choice2]) return choice1;
-      return choice2;
-    }
     *touches+=2;
     int size1=0, size2=0;
     for(int x=0; x<bin_size; x++) {
@@ -560,11 +493,6 @@ public: // all public for now
     bin_entry.just_lock_bin_ = true;
     if (depth > 0) write_set->push_back(bin_entry); // that way bin id will be updated
 
-    if (fancy == 1 && other_bin[bucket][slot] == -1) {
-      atomic_fetch_add(&taken[bucket], 1); //taken[bucket]++;
-      new_entry.special_fancy_ = true;
-    }
-
     write_set->push_back(new_entry);
     std::atomic_thread_fence(std::memory_order_release);
     std::atomic_thread_fence(std::memory_order_acquire);
@@ -621,10 +549,6 @@ public: // all public for now
       elt3.expected_slot_id_ = new_id;
       elt3.expected_payload_ = 0;
       if (finished) {
-	if (fancy == 1) {
-	  atomic_fetch_add(&taken[elt3.bin_], 1); //taken[elt3.bin_]++;
-	  elt3.special_fancy_ = true;
-	}
 	write_set->push_back(elt1);
 	write_set->push_back(elt2);
 	write_set->push_back(elt3);
@@ -947,7 +871,6 @@ public: // all public for now
     }
     for(int x=0; x< bin_num; x++) {
       kickout_index[x]=0;
-      taken[x] = 0;
       bin_ids[x] = 0;
       for(int y=0; y<bin_size; y++) {
 	other_bin[x][y] = -1;
@@ -997,8 +920,7 @@ int main() {
 	<<" trials: "<<trial_num
 	<<" max chain: "<<maxchain
 	<<" balance on: "<<balance
-	<<" cycle-kick on: "<<type
-	<<" kickout fancyness: "<< fancy <<endl;
+	<<" cycle-kick on: "<<type<<endl;
     cout<<"Average aborts: "<<getav(aborts);
   }
   return 0;
