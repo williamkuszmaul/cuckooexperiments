@@ -25,7 +25,7 @@ unsigned long long batch = 100; // this many operations are done in each commit 
 int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
-int only_cycle = 1; // 0 to run both with and without fancy-mode, 1 to run just fancy-mode)
+int only_cycle = 0; // 0 to run both with and without fancy-mode, 1 to run just fancy-mode)
 int fancy = 0; 
 // 0 --> kickout counter (which I've previously shown performs well at high density)
 // 1 --> kickout counter, and fullness counter (fullness counter requires special end-proceduce and a bin could suffer long-term from one data race)
@@ -185,7 +185,8 @@ public: // all public for now
 	  owner_->other_bin[bin_][slot_] = new_entry_;
 	  owner_->payloads[bin_][slot_] = new_payload_;
 	  if (new_entry_ = -1 && new_payload_ == 0) // for deletes for fancy = 1 case
-	    owner_->taken[bin_]--;
+	    //owner_->taken[bin_]--;
+	    atomic_fetch_add(&owner_->taken[bin_], -1);
 	}
       }
     }
@@ -230,8 +231,8 @@ public: // all public for now
     if (fancy == 1) {
       for (uint64_t x = 0; x < write_set.size(); x++) {
 	if (write_set[x].special_fancy_) {
-	  taken[write_set[x].bin_]--;
-	  //                    atomic_fetch_add(&taken[write_set[x].bin_], -1);
+	  //taken[write_set[x].bin_]--;
+	  atomic_fetch_add(&taken[write_set[x].bin_], -1);
 	}
       }
     }
@@ -377,11 +378,14 @@ public: // all public for now
 	  int empty_index = taken[bucket] - actual_count;
 	  int empty_seen = 0;
 	  for (int x = 0; x < bin_size; x++) {
-	    if (other_bin[bucket][x] == -1) empty_seen++;
-	    if (empty_seen >= empty_index + 1) {
-	      taken[bucket]++;
-	      //                            atomic_fetch_add(&taken[bucket], 1);
-	      return x;
+	    if (other_bin[bucket][x] == -1) {
+	      empty_seen++;
+	      if (empty_seen >= empty_index + 1) {
+		//taken[bucket]++;
+		//atomic_fetch_add(&taken[bucket], 1);
+		return x;
+	      //}
+	      }
 	    }
 	  }
 	}
@@ -556,7 +560,10 @@ public: // all public for now
     bin_entry.just_lock_bin_ = true;
     if (depth > 0) write_set->push_back(bin_entry); // that way bin id will be updated
 
-    if (fancy == 1 && other_bin[bucket][slot] == -1) new_entry.special_fancy_ = true;
+    if (fancy == 1 && other_bin[bucket][slot] == -1) {
+      atomic_fetch_add(&taken[bucket], 1); //taken[bucket]++;
+      new_entry.special_fancy_ = true;
+    }
 
     write_set->push_back(new_entry);
     std::atomic_thread_fence(std::memory_order_release);
@@ -614,9 +621,10 @@ public: // all public for now
       elt3.expected_slot_id_ = new_id;
       elt3.expected_payload_ = 0;
       if (finished) {
-	if (fancy == 1) taken[elt3.bin_]++; // the first element of write_set2 will have been interpreted as a delete, decrementing this,
-	// so that it will ahve been incremented in chain, and decremented in the delete, meaning we have to increment it again to
-	// say that we're planning on using it for an insert.
+	if (fancy == 1) {
+	  atomic_fetch_add(&taken[elt3.bin_], 1); //taken[elt3.bin_]++;
+	  elt3.special_fancy_ = true;
+	}
 	write_set->push_back(elt1);
 	write_set->push_back(elt2);
 	write_set->push_back(elt3);
