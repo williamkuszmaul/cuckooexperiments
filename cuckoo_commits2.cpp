@@ -39,7 +39,7 @@ int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
 int only_cycle = 0; // 0 to run both with and without cycle-kick, 1 to run just cyclekick
-bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
+bool retry_on = false; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
 
 #define klockflag (((uint64_t)1)<<31)
@@ -280,6 +280,9 @@ public: // all public for now
       }
       write_set[x].unlock(!prev_bin_id_same, unclaim);
     }
+    std::atomic_thread_fence(std::memory_order_release); // memory fence
+    std::atomic_thread_fence(std::memory_order_acquire); // to guarantee that claims are released only once locks are also released.
+
     if (unclaim) {
       for (uint64_t x = locked_index; x < write_set.size(); x++) {
 	if (write_set[x].for_write_ && write_set[x].slot_id_ != nullptr) {
@@ -639,10 +642,11 @@ public: // all public for now
       std::atomic_thread_fence(std::memory_order_release); // memory fence
       std::atomic_thread_fence(std::memory_order_acquire); // because we will use other bin in a second
       valid_slot = true;
-      if ((slot_id & klockflag) != 0 || (slot_id & kclaimflag) != 0) valid_slot = false;
+      if ((slot_id & klockflag) != 0 || (slot_id & kclaimflag) != 0) valid_slot = false; // Note, here we use the assumptiong that locked --> claimed
       if (other_bin[bucket][slot] == bucket) valid_slot = false;
       if (valid_slot) valid_slot = slot_ids[bucket][slot].compare_exchange_weak(slot_id, slot_id | kclaimflag);
       temp++;
+      assert(temp < 1000); // This translates to every slot in a bin being claimed
       //if (temp > 100000) cout<<"Lots of waiting..."<<endl;
     }
     return slot;
