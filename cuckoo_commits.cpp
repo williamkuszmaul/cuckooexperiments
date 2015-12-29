@@ -40,7 +40,7 @@ public: // all public for now
   int other_bin[bin_num][bin_size]; // pairs of hashes act as keys; for each record, this stores its other hash; empty slot --> -1
   uint64_t payloads[bin_num][bin_size]; // a payload for each slot
   atomic <int> kickout_index[bin_num]; // also known as kickout counter
-  int canceled_inserts[threads][2]; // 0 -> actual count, 1 -> temporary count for current commit phase, -1 for an insert
+  int num_inserts[threads][2]; // 0 -> actual count, 1 -> temporary count for current commit phase
   vector <int> pairs_inserted; // the pairs that can potentially be inserted
   std::atomic<uint64_t> slot_ids[bin_num][bin_size];
   std::atomic<uint64_t> bin_ids[bin_num];
@@ -520,7 +520,7 @@ public: // all public for now
       write_set->push_back(entry1);
       write_set->push_back(entry2);
     }
-    if (depth == 0) canceled_inserts[thread_id][1]--; // is negative the number of records added by thread
+    if (depth == 0) num_inserts[thread_id][1]++;
     int temp = 0;
     bool valid_slot = false;
     while (!valid_slot) { // need to get valid slot
@@ -605,7 +605,7 @@ public: // all public for now
 	write_set->push_back(elt3);
 	return;
       }
-      canceled_inserts[thread_id][1]++; // because insert failed this time -- need to retry
+      num_inserts[thread_id][1]--; // because insert needs to be tried again
     }
   }
 
@@ -615,14 +615,14 @@ public: // all public for now
       LogElt entry = LogElt(hash1, slot, -1, bin_id1, slot_id, payload, 0, true, this);
       entry.bin_id_ = nullptr;
       write_set->push_back(entry);
-      canceled_inserts[thread_id][1]++;
+      num_inserts[thread_id][1]--;
       return; // doesn't need to update bin id
     }
     if (find_record(hash2, hash1, &bin_id2, &slot_id, &slot, &payload)) {
       LogElt entry = LogElt(hash2, slot, -1, bin_id2, slot_id, payload, 0, true, this);
       entry.bin_id_ = nullptr;
       write_set->push_back(entry);
-      canceled_inserts[thread_id][1]++;
+      num_inserts[thread_id][1]--;
       return; // doesn't need to update bin id
     }
     LogElt new_entry1 = LogElt(hash1, 0, hash2, bin_id1, 0, &bin_ids[hash1], nullptr,
@@ -728,7 +728,7 @@ public: // all public for now
     vector <Op> operation_set(0);
     vector <int> transaction_pairs (0);
 
-    while (canceled_inserts[thread_id][0] * -1 < inserts) {
+    while (num_inserts[thread_id][0] < inserts) {
       //build batch
       while (number_used < batch) {
 	if (transaction_check(&transaction_pairs, pairs[2*x], pairs[2*x+1])) {
@@ -810,13 +810,13 @@ public: // all public for now
       }
       if (!aborted) {
 	prev_x = x;
-	canceled_inserts[thread_id][0] += canceled_inserts[thread_id][1];
+	num_inserts[thread_id][0] += num_inserts[thread_id][1];
 	times_tried = 0;
       }
       write_set.resize(0);
       operation_set.resize(0);
       number_used = 0;
-      canceled_inserts[thread_id][1] = 0;
+      num_inserts[thread_id][1] = 0;
       transaction_pairs.resize(0);
     }
   }
@@ -894,7 +894,7 @@ public: // all public for now
     int total_aborts = 0;
     int total_inserts = 0;
     for (uint64_t y = 0; y < threads; y++) total_aborts += aborts_table[y];
-    for (uint64_t y = 0; y < threads; y++) total_inserts -= canceled_inserts[y][0];
+    for (uint64_t y = 0; y < threads; y++) total_inserts += num_inserts[y][0];
     assert(end_test(total_inserts, total_aborts));
     //cout<<"made it!"<<endl;
     for (uint64_t y  = 0; y < threads; y ++) {
@@ -908,8 +908,8 @@ public: // all public for now
     cyclekick=false;
     pairs_inserted.resize(0);
     for (int x = 0; x < threads; x++) {
-      canceled_inserts[x][0] = 0;
-      canceled_inserts[x][0] = 0;
+      num_inserts[x][0] = 0;
+      num_inserts[x][0] = 0;
     }
     for(int x=0; x< bin_num; x++) {
       kickout_index[x]=0;
