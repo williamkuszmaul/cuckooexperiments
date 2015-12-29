@@ -279,8 +279,9 @@ public: // all public for now
       }
       write_set[x].unlock(!prev_bin_id_same, unclaim);
     }
-    std::atomic_thread_fence(std::memory_order_release); // memory fence
-    std::atomic_thread_fence(std::memory_order_acquire); // to guarantee that claims are released only once locks are also released.
+    // std::atomic_thread_fence(std::memory_order_release); // memory fence
+    // std::atomic_thread_fence(std::memory_order_acquire); // to guarantee that claims are released only once locks are also released.
+    // Memory fence not needed since our is_claimed function (defined later) checks for BOTH locks and claims
 
     if (unclaim) {
       for (uint64_t x = locked_index; x < write_set.size(); x++) {
@@ -474,13 +475,6 @@ public: // all public for now
     return success;
   }
 
-  // void get_claim(atomic <uint64_t>* num, uint64_t* final_id) {
-  //   int attempts = 0;
-  //   while (!try_to_claim(num, final_id)) {
-  //     attempts++;
-  //   }
-  // }
-
   int first_empty_position(int bucket) { //First empty position if bucket is not full; -1 if bucket is full.
     for(int x=0; x<bin_size; x++) {
       if(other_bin[bucket][x]==-1 && !is_claimed(slot_ids[bucket][x])) return x;
@@ -502,7 +496,7 @@ public: // all public for now
     return answer;
   }
 
-  /// Here we pick which of the two hashed to buckets to insert into. Returns one of the two choices.
+  /// Here we pick which of the two hashed-to buckets to insert into. Returns one of the two choices.
   int pick_bucket(int choice1, int choice2, int *touches) {
     if (balance) return pick_bucket_balance(choice1, choice2, touches);
     // The standard way of doing it // doesn't worry about checking whether things are locked
@@ -525,6 +519,7 @@ public: // all public for now
     return choice1;
   }
 
+  // spin lock
   void get_bin_id_unlocked(uint64_t* bin_id, int bin) {
     int temp = 0;
     *bin_id = bin_ids[bin];
@@ -535,6 +530,7 @@ public: // all public for now
     }
   }
 
+  // spin lock
   void get_slot_id_unlocked(uint64_t* slot_id, int bin, int slot) {
     *slot_id = slot_ids[bin][slot];
     while ((*slot_id & klockflag) != 0) {
@@ -543,8 +539,8 @@ public: // all public for now
     }
   }
 
+  // used for read set retries when we locked the bin id ourselves already
   bool find_record_ignore_bin_lock(int bucket, int load, uint64_t* bin_id_chosen) {
-    // used for read set retries when we locked the bin id ourselves already
     uint64_t bin_id;
     uint64_t hash1 = bucket, hash2 = load;
     uint64_t temp_payload = 0;
@@ -578,7 +574,7 @@ public: // all public for now
     return false;
   }
 
-  // returns whether record was found or not.
+  // returns whether record was found or not. Fills in bin_id_chosen, slot_id_chosen, slot, and payload if found
   bool find_record(int bucket, int load, uint64_t* bin_id_chosen,
 		   uint64_t* slot_id_chosen, uint64_t* slot, uint64_t* payload) {
     uint64_t bin_id;
@@ -628,7 +624,7 @@ public: // all public for now
       std::atomic_thread_fence(std::memory_order_release); // memory fence
       std::atomic_thread_fence(std::memory_order_acquire); // because we will use other bin in a second
       valid_slot = true;
-      if ((slot_id & klockflag) != 0 || (slot_id & kclaimflag) != 0) valid_slot = false; // Note, here we use the assumptiong that locked --> claimed
+      if ((slot_id & klockflag) != 0 || (slot_id & kclaimflag) != 0) valid_slot = false; 
       if (other_bin[bucket][slot] == bucket) valid_slot = false;
       if (valid_slot) valid_slot = slot_ids[bucket][slot].compare_exchange_weak(slot_id, slot_id | kclaimflag);
       temp++;
@@ -638,6 +634,7 @@ public: // all public for now
     return slot;
   }
 
+  // quickly grabs spin lock 
   void quick_lock(std::atomic <uint64_t>* id) {
     bool grabbed = false;
     uint64_t expected;
@@ -710,10 +707,6 @@ public: // all public for now
       if (quit2) write_set->push_back(new_entry2);
       return 0;
     }
-    // need to verify it's not present
-    // cout<<"Will be waiting for: "<<bin_id1<<" "<<bin_id2<<endl;
-    // cout<<bucket<<" bin_id1?"<<endl;
-    // cout<<other_hash<<" bin_id2?"<<endl;
     LogElt entry1 = LogElt(other_hash, 0, bucket, bin_id2, 0, &bin_ids[other_hash],
 			   nullptr, payload, payload, false, this); //verifying record not present
     LogElt entry2 = LogElt(bucket, 0, other_hash, bin_id1, 0, &bin_ids[bucket],
@@ -778,6 +771,7 @@ public: // all public for now
       // payload is taken after slot id, so it may not be right. But if it isn't, we will abort because of the id change
       if (try_to_claim(&slot_ids[bucket][slot], &slot_id) == false) valid_slot = false;
       //      cout<<temp<<endl;
+      assert(temp < 1000); // This translates to every slot in a bin being claimed
       payload = payloads[bucket][slot]; // important to do _after_ we claim (claim is atomic so gets automatic fence)
     }
     LogElt new_entry = LogElt(bucket, slot, other_hash, bin_id1, slot_id, payload,
@@ -803,7 +797,6 @@ public: // all public for now
 
   // performs insert
   int insert(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) { //returns length of Cuckoo chain used //inserts a random pair of hash functions
-    //cout<<"made it to first insert"<<endl;
     int touches=0;
     int bucket = pick_bucket(hash1, hash2, &touches);
     int answer = 0;
@@ -823,54 +816,41 @@ public: // all public for now
     return answer;
   }
 
-  // if false, need to abort entire transaction!
+  // If returns false, need to abort entire transaction!
   bool kill(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
     uint64_t slot_id, bin_id1 = 0, bin_id2, slot, payload = 0;
-    bool tried_bin = false;
-    while (!tried_bin) {
-      if (find_record(hash1, hash2, &bin_id1, &slot_id, &slot, &payload)) {
-	if (!is_claimed(slot_id)) {
-	  bool success = (slot_ids[hash1][slot]).compare_exchange_weak(slot_id, (slot_id | kclaimflag));
-	  if (success) { // if "success" failed, then we will have to check for the record again
-	    LogElt entry = LogElt(hash1, slot, -1, bin_id1, slot_id, payload, 0, true, this);
-	    entry.bin_id_ = nullptr;
-	    write_set->push_back(entry);
-	    canceled_inserts[thread_id][1]++;
-	    return true;  // doesn't need to update bin id
-	  }
+    if (find_record(hash1, hash2, &bin_id1, &slot_id, &slot, &payload)) {
+      if (!is_claimed(slot_id)) {
+	bool success = (slot_ids[hash1][slot]).compare_exchange_weak(slot_id, (slot_id | kclaimflag));
+	if (success) { // if "success" failed, then we will have to check for the record again
+	  LogElt entry = LogElt(hash1, slot, -1, bin_id1, slot_id, payload, 0, true, this);
+	  entry.bin_id_ = nullptr;
+	  write_set->push_back(entry);
+	  canceled_inserts[thread_id][1]++;
+	  return true;  // doesn't need to update bin id
 	}
-	// If you get here, then the slot was claimed, and its time to abort the entire transaction
-	cout<<"kill contention abort!"<<endl;
-	return false;
-      } else {
-	tried_bin = true;
       }
+      // If you get here, then the slot was claimed, and its time to abort the entire transaction
+      cout<<"kill contention abort!"<<endl;
+      return false;
     }
-    tried_bin = false;
-    while (!tried_bin) {
-      if (find_record(hash2, hash1, &bin_id2, &slot_id, &slot, &payload)) {
-	if (!is_claimed(slot_id)) {
-	  bool success = (slot_ids[hash2][slot]).compare_exchange_weak(slot_id, slot_id | kclaimflag);
-	  if (success) {
-	    LogElt entry = LogElt(hash2, slot, -1, bin_id2, slot_id, payload, 0, true, this);
-	    //LogElt bin_entry = entry;
-	    entry.bin_id_ = nullptr;
-	    //bin_entry.slot_id_ = nullptr;
-	    //bin_entry.just_lock_bin_ = true;
-	    write_set->push_back(entry);
-	    //write_set->push_back(bin_entry);
-	    canceled_inserts[thread_id][1]++;
-	    return true;  // doesn't need to update bin id
-	  }
+    if (find_record(hash2, hash1, &bin_id2, &slot_id, &slot, &payload)) {
+      if (!is_claimed(slot_id)) {
+	bool success = (slot_ids[hash2][slot]).compare_exchange_weak(slot_id, slot_id | kclaimflag);
+	if (success) {
+	  LogElt entry = LogElt(hash2, slot, -1, bin_id2, slot_id, payload, 0, true, this);
+	  entry.bin_id_ = nullptr;
+	  write_set->push_back(entry);
+	  canceled_inserts[thread_id][1]++;
+	  return true;  // doesn't need to update bin id
 	}
-		cout<<"kill contention abort!"<<endl;
-	// If you get here, then the slot was claimed, and its time to abort the entire transaction
-	return false;
-      } else {
-	tried_bin = true;
       }
+      cout<<"kill contention abort!"<<endl;
+      // If you get here, then the slot was claimed, and its time to abort the entire transaction
+      return false;
     }
-    //cout<<"Erp"<<endl;
+
+    // At this point we know the record simply isn't present
     LogElt new_entry1 = LogElt(hash1, 0, hash2, bin_id1, 0, &bin_ids[hash1], nullptr,
 			       0, 0, false, this);
     LogElt new_entry2 = LogElt(hash2, 0, hash1, bin_id2, 0, &bin_ids[hash2], nullptr,
