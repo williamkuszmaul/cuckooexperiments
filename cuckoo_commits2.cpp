@@ -940,27 +940,11 @@ public: // all public for now
 	hash1_ = hash2;
       }
       operation_type_ = op_type; // 1 -> read, 2 -> delete, 3 -> overwrite, 4 -> insert
-      // is needed to put inserts last so we don't hit deadlock waiting for own claim to expire
-      // Also reads have to be first because the others
-      // may be dependant on the read in practice. Deletes and overwrites are the flight risks
-      // -- since they are set on one record, they can hit a claim deadlock. (Insert is flexible
-      // with slot choice and so doesn't face this issue). Consequently, we have to sort deletes
-      // and overwrites together
     }
     Op() {
       hash1_ = -1;
       hash2_ = -1;
       operation_type_ = -1;
-    }
-    static bool compare(const Op &left, const Op &right) {
-      if (left.operation_type_ != right.operation_type_) {
-	if (left.operation_type_ * right.operation_type_ != 6) { // deletes and overwrites don't get sorted with respect to each other
-	  return (left.operation_type_ < right.operation_type_);
-	}
-      }
-      if (left.hash1_ != right.hash1_) return (left.hash1_ < right.hash1_);
-      if (left.hash2_ != right.hash2_) return (left.hash2_ < right.hash2_);
-      return false;
     }
   };
 
@@ -979,8 +963,8 @@ public: // all public for now
     return true;
   }
 
-  // uses a sort order that guarantees no claim deadlocks
-  void run_thread (int *pairs, int inserts, int* local_aborts, int thread_id) { // does the inserts assigned to the thread
+  // Note: May do slightly more inserts than asked, since does everything in multiples of complete batches.
+  void run_thread (int *pairs, int inserts, int* local_aborts, int thread_id) { 
     vector <LogElt> write_set;
     int times_tried = 0;
     int number_used = 0;
@@ -991,8 +975,8 @@ public: // all public for now
     vector <int> transaction_pairs (0);
 
     while (canceled_inserts[thread_id][0] * -1 < inserts) {
-      //build batch
-      while (number_used < batch) {
+      // build a batch
+      while (number_used < batch) { 
 	if (transaction_check(&transaction_pairs, pairs[2*x], pairs[2*x+1])) {
 	  number_used++;
 	  Op next = Op(pairs[2*x], pairs[2*x+1], 4);
@@ -1005,7 +989,7 @@ public: // all public for now
 	  break;
 	}
 	if (x % inserts_per_kill == 0 && prev_x > 0) {
-	  int index = rand() % prev_x;
+	  int index = rand() % prev_x; // randomly select out of all items ever inserted
 	  if (transaction_check(&transaction_pairs, pairs[2*index], pairs[2*index+1])) {
 	    Op next = Op(pairs[2*index], pairs[2*index+1], 2);
 	    operation_set.push_back(next);
@@ -1017,14 +1001,11 @@ public: // all public for now
 	  break;
 	}
 	if (x % inserts_per_overwrite == 0 && prev_x > 0) {
-	  int index = rand() % prev_x;
-	  // be careful not to make index same for deletes and inserts because
-	  // we currently abort when same slot is locked twice by our thread.
+	  int index = rand() % prev_x; // randomly select out of all items ever inserted
 	  if (transaction_check(&transaction_pairs, pairs[2*index], pairs[2*index+1])) {
 	    Op next = Op(pairs[2*index], pairs[2*index+1], 3);
 	    operation_set.push_back(next);
 	    number_used++;
-
 	  }
 	}
 	if (number_used >= batch) {
@@ -1032,11 +1013,10 @@ public: // all public for now
 	  break;
 	}
 	if (x % inserts_per_read == 0 && prev_x > 0) {
-	  int index = rand() % prev_x;
+	  int index = rand() % prev_x; // randomly select out of all items ever inserted
 	  if (transaction_check(&transaction_pairs, pairs[2*index], pairs[2*index+1])) {
 	    Op next = Op(pairs[2*index], pairs[2*index+1], 1);
 	    operation_set.push_back(next);
-	    //                    read(pairs[2*index], pairs[2*index + 1], &write_set, thread_id);
 	    number_used++;
 	  }
 	}
@@ -1044,7 +1024,6 @@ public: // all public for now
       }
 
       // build write and read sets
-      //std::stable_sort (operation_set.begin(), operation_set.end(), Op::compare); 
       bool claim_contention_abort = false;
       for (int j = 0; j < operation_set.size(); j++) {
 	Op elt = operation_set[j];
@@ -1131,7 +1110,7 @@ public: // all public for now
       pairs_inserted.pop_back();
       bool passed = false;
       bool just_passed = false;
-      for (int x=0; x<bin_size; x++) {
+      for (int x = 0; x < bin_size; x++) {
 	if (other_bin[h1][x] == h2) just_passed = true;
 	if (other_bin[h2][x] == h1) just_passed = true;
 	if (just_passed && passed) { // no duplicate hash pairs allowed
@@ -1143,19 +1122,18 @@ public: // all public for now
       }
       if (!passed) missing_count ++;
     }
-    if(missing_count <= expected_misses) return true; //when #deletes = #inserts, this is a good test of deletes
+    if(missing_count <= expected_misses) return true; // aborts could make inequality happen
     cout<<"Elements lost! "<<missing_count<<" "<<expected_misses<<endl;
     return false;
   }
 
   int run() {
-    //cout<<"made it to prefill"<<endl;
-    uint64_t inserts = (uint64_t)(init_fill * (double)(bin_size * bin_num)) * 2; // have twice as many as desired prepared
+    int overcount_factor = 10;
+    uint64_t inserts = (uint64_t)(init_fill * (double)(bin_size * bin_num)) * overcount_factor; // have overcount_factor times as many as desired for inserts prepared
     int **hash_pairs = new int*[threads];
     for (int i = 0; i < threads; i++) {
       hash_pairs[i] = new int[inserts / threads * 2];
     }
-    //int hash_pairs [threads][inserts / threads][2];
     for (uint64_t t  = 0; t < threads; t ++) {
       for (uint64_t pair = 0; pair < inserts / threads; pair++) {
 	hash_pairs[t][pair * 2] = rand() % bin_num;
@@ -1171,7 +1149,7 @@ public: // all public for now
     /// good link: http://stackoverflow.com/questions/10673585/start-thread-with-member-function
 
     for (uint64_t y  = 0; y < threads; y ++) {
-      thread_array.push_back(new thread(&cuckoo_table::run_thread, this, &hash_pairs[y][0], inserts / threads / 2, aborts_table + y, y));
+      thread_array.push_back(new thread(&cuckoo_table::run_thread, this, &hash_pairs[y][0], inserts / threads / overcount_factor, aborts_table + y, y));
     }
     for (uint64_t y  = 0; y < threads; y ++) {
       thread_array[y]->join();
