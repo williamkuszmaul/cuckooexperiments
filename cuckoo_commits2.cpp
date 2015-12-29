@@ -1085,6 +1085,14 @@ public: // all public for now
     }
   }
 
+  struct hashpair {
+    int hash1;
+    int hash2;
+    hashpair(int h1, int h2) {
+      hash1 = h1;
+      hash2 = h2;
+    }
+  };
   // Tests that everything went through hash table like it was supposed to
   bool end_test(int total_inserts, int total_aborts) { // just to check for bugs in program
     // Now to test that everything went correctly
