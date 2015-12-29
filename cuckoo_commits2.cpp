@@ -292,19 +292,16 @@ public: // all public for now
 	}
       }
     }
-
   }
 
 
   // aborts unsorted writeset; assumes nothing is locked, and we aborted because of claim contention for kill or increment
-  void abort_unsorted_writeset(vector <LogElt> write_set, bool unclaim) { // uses unsorted write set
-    if (unclaim) {
-      for (uint64_t x = 0; x < write_set.size(); x++) {
-	if (write_set[x].for_write_ && write_set[x].slot_id_ != nullptr) {
-	  assert((*write_set[x].slot_id_ & kclaimflag) != 0);
-	  (*write_set[x].slot_id_) = ((*write_set[x].slot_id_) - kclaimflag);
-	  assert((*write_set[x].slot_id_ & kclaimflag) == 0);
-	}
+  void abort_unsorted_writeset(vector <LogElt> write_set) { // uses unsorted write set
+    for (uint64_t x = 0; x < write_set.size(); x++) {
+      if (write_set[x].for_write_ && write_set[x].slot_id_ != nullptr) {
+	assert((*write_set[x].slot_id_ & kclaimflag) != 0);
+	(*write_set[x].slot_id_) = ((*write_set[x].slot_id_) - kclaimflag);
+	assert((*write_set[x].slot_id_ & kclaimflag) == 0);
       }
     }
   }
@@ -317,28 +314,26 @@ public: // all public for now
     return true;
   }
 
-  bool commit(vector <LogElt> write_set, uint64_t* worker_id) {
-    // would be better to use a reference than a copy of write_set
+  bool commit(vector <LogElt> &write_set, uint64_t* worker_id) {
     std::atomic_thread_fence(std::memory_order_release); // memory fence
     std::atomic_thread_fence(std::memory_order_acquire);
-    bool terminate = false;
-    for (uint64_t x = 0; x < write_set.size(); x++) { // just for sake of testing to make sure same record not updated twice in same transaction
-      for (uint64_t y = x + 1; y < write_set.size(); y++) {
-	if (write_set[x].for_write_ && write_set[y].for_write_ &&
-	                            write_set[x].slot_id_ != nullptr && write_set[y].slot_id_ != nullptr &&
-	    (write_set)[x].bin_ == (write_set)[y].bin_ && (write_set)[x].slot_ == (write_set)[y].slot_) {
-	  terminate = true;
-	}
-      }
-    }
+    // bool terminate = false;
+    // for (uint64_t x = 0; x < write_set.size(); x++) { // just for sake of testing to make sure same record not updated twice in same transaction
+    //   for (uint64_t y = x + 1; y < write_set.size(); y++) {
+    // 	if (write_set[x].for_write_ && write_set[y].for_write_ &&
+    // 	                            write_set[x].slot_id_ != nullptr && write_set[y].slot_id_ != nullptr &&
+    // 	    (write_set)[x].bin_ == (write_set)[y].bin_ && (write_set)[x].slot_ == (write_set)[y].slot_) {
+    // 	  terminate = true;
+    // 	}
+    //   }
+    // }
 
     vector <LogElt> sorted_write_set (write_set.size());
     for (uint64_t x = 0; x < write_set.size(); x++) sorted_write_set[x] = write_set[x];
     std::stable_sort (sorted_write_set.begin(), sorted_write_set.end(), LogElt::compare);
     int set_size = sorted_write_set.size();
 
-    // check write set and lock ------------------
-    // lock in sorted order
+    // Check and lock write set. At same time perform local retries for bins in read set.
 
     bool try_all_again = true;
     uint64_t flags = klockflag + kclaimflag;
@@ -349,43 +344,37 @@ public: // all public for now
       new_id = 0;
       try_all_again = false;
       for (uint64_t x = 0; x < write_set.size(); x++) {
-	//	if (sorted_write_set[x].for_write_ || 1==1) { // By allowing read set elements through, we do a local retry for them
-	// as we lock the writes. 
-	  bool prev_bin_id_same = false;
-	  // check if we've already locked bin
-	  if (sorted_write_set[x].bin_id_ != nullptr) {
-	    int first_hit = x;
-	    while (first_hit >= 0 && sorted_write_set[first_hit].bin_id_ == sorted_write_set[x].bin_id_) first_hit--;
-	    first_hit++; // subtracted one too much
-	    if (first_hit < x && sorted_write_set[first_hit].for_write_) {
-	      prev_bin_id_same = true;
-	    }
+	bool prev_bin_id_same = false;
+	// check if we've already locked bin
+	if (sorted_write_set[x].bin_id_ != nullptr) {
+	  int first_hit = x;
+	  while (first_hit >= 0 && sorted_write_set[first_hit].bin_id_ == sorted_write_set[x].bin_id_) first_hit--;
+	  first_hit++; // subtracted one too much
+	  if (first_hit < x && sorted_write_set[first_hit].for_write_) {
+	    prev_bin_id_same = true;
 	  }
-	  if (!sorted_write_set[x].just_lock_bin_) {
-	    if (!sorted_write_set[x].conditional_verify(prev_bin_id_same, retry_on)) {
-	      // includes built in retry mechanism for bin ids // only locks if in writeset
-	      // cout<<"Bin number "<<sorted_write_set[x].bin_<<endl;
-	      // cout<<"Aborted in primary check with prev_bin_id_same = "<<prev_bin_id_same<<endl;
-	      // cout<<"Thread id: "<<pthread_self()<<" whether for write "<<sorted_write_set[x].for_write_<<endl;
-	      // cout<<(sorted_write_set[x].expected_bin_id_ | klockflag) - klockflag<<" "<<(*(sorted_write_set[x].bin_id_) | klockflag) - klockflag<<endl;
-	      // cout<<(sorted_write_set[x].expected_bin_id_)<<" "<<(*(sorted_write_set[x].bin_id_))<<endl;
-
-	      abort(sorted_write_set, x, true); // x tells us up to what index we need to unlock
-	      return false;
-	    }
-	  } else {
-	    // cout<<"!!!!!! Did an unconditional lock !!!!!!!!!!!"<<endl;
-	    sorted_write_set[x].get_lock_unconditional(prev_bin_id_same);
+	}
+	if (!sorted_write_set[x].just_lock_bin_) {
+	  // conditional_verify includes built in retry mechanism for bin ids // only locks if in writeset
+	  if (!sorted_write_set[x].conditional_verify(prev_bin_id_same, retry_on)) {
+	    // cout<<"Bin number "<<sorted_write_set[x].bin_<<endl;
+	    // cout<<"Aborted in primary check with prev_bin_id_same = "<<prev_bin_id_same<<endl;
+	    // cout<<"Thread id: "<<pthread_self()<<" whether for write "<<sorted_write_set[x].for_write_<<endl;
+	    // cout<<(sorted_write_set[x].expected_bin_id_ | klockflag) - klockflag<<" "<<(*(sorted_write_set[x].bin_id_) | klockflag) - klockflag<<endl;
+	    // cout<<(sorted_write_set[x].expected_bin_id_)<<" "<<(*(sorted_write_set[x].bin_id_))<<endl;
+	    abort(sorted_write_set, x, true); // x tells us up to what index we need to unlock. Unclaims everything
+	    return false;
 	  }
-
-	  if (sorted_write_set[x].slot_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_slot_id_ | flags));
-	  if (sorted_write_set[x].bin_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_bin_id_ | flags));
-	  
-	  //}
+	} else {
+	  // cout<<"!!!!!! Did an unconditional lock !!!!!!!!!!!"<<endl;
+	  sorted_write_set[x].get_lock_unconditional(prev_bin_id_same);
+	}
+	
+	if (sorted_write_set[x].slot_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_slot_id_ | flags));
+	if (sorted_write_set[x].bin_id_ != nullptr) new_id = max((new_id | flags), (sorted_write_set[x].expected_bin_id_ | flags));
       }
       // NOTE I THINK AT THIS POINT SLOT_ID_ SHOULD HAVE ITS FINAL VALUE, BUT WE WILL CONTINUE DOING NEWID UPDATES LATER THAT WAY
       // IT'S HARD TO INTRODUCE BUGS WHEN MODIFYING RETRY METHOD OR WHEN TURNING OFF RETRIES
-      //cout<<"Planned new id: "<<new_id - flags<<endl;
       std::atomic_thread_fence(std::memory_order_release); // memory fence
       std::atomic_thread_fence(std::memory_order_acquire);
 
@@ -410,6 +399,7 @@ public: // all public for now
 	      // cout<<(sorted_write_set[x].expected_bin_id_ | klockflag) - klockflag<<" "<<(*(sorted_write_set[x].bin_id_) | klockflag) - klockflag<<endl;
 	      // cout<<(sorted_write_set[x].expected_bin_id_)<<" "<<(*(sorted_write_set[x].bin_id_))<<endl;
 	      abort(sorted_write_set, write_set.size(), false); // unlock all but do not release claims!
+	      // in order to retry on reads we have to unlock everything, or we risk deadlock
 	      LogElt elt = sorted_write_set[x];
 	      uint64_t hash1 = elt.bin_, hash2 = elt.new_entry_, bin_id = 0, slot_id = 0, slot = 0, payload = 0;
 	      if (!retry_on || find_record(hash1, hash2, &bin_id, &slot_id, &slot, &payload)) {
@@ -417,10 +407,8 @@ public: // all public for now
 		if (retry_on) cout<<"Read case broke2"<<endl;
 		return false; // record state of existance changed
 	      }
-	      // in order to retry on reads we have to unlock everything, or we risk deadlock
 	      elt.expected_bin_id_ = bin_id;
 	      try_all_again = true;
-	      //cout<<repeats<<endl;
 	      break;
 	    }
 	  }
@@ -436,7 +424,7 @@ public: // all public for now
 	}
       }
       new_id++;
-      assert(!terminate);
+      // assert(!terminate);
     }
 
     // apply in actual order (sorted order would work also since we don't allow multiple writes to same slot)
@@ -458,13 +446,12 @@ public: // all public for now
       }
       sorted_write_set[x].unlock(!prev_bin_id_same, true);
     }
+    
     for (uint64_t x = 0; x < write_set.size(); x++)
       if (write_set[x].for_write_ && write_set[x].slot_id_ != nullptr)
 	assert(write_set[x].expected_slot_id_ < new_id);
     //assert(is_all_unlocked(write_set));
-    //cout<<"Not aborted"<<endl;
     *worker_id = new_id - flags;
-    //cout<<"New id: "<<new_id - flags<<endl;
     return true;
   }
 
@@ -1114,7 +1101,7 @@ public: // all public for now
       if (claim_contention_abort) {
 	cout<<"Claim contention abort!"<<endl;
 	aborted = true;
-	abort_unsorted_writeset(write_set, true);
+	abort_unsorted_writeset(write_set);
       } else {
 	aborted = !commit(write_set, &worker_id);
       }
