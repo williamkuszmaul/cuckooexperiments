@@ -233,7 +233,7 @@ public: // all public for now
   // retry, then we just start the entire commit process over. The difference between doing retries at the beginning vs
   // while taking locks may affect the speed of a small number of commits (since if a retry sneaks in between when we check
   // for retries and when we're taking locks, then we have to release all locks and start over). But the overall affect on aborts
-  // is not statistically significant. I only did it differently in the other version to make sure the fancier way of doing it doesn't result
+  // should not be statistically significant. I only did it differently in the other version to make sure the fancier way of doing it doesn't result
   // in any unforseen deadlocks or anything.
   bool commit(vector <LogElt> &write_set, uint64_t* worker_id) {
     // // For testing only.
@@ -273,7 +273,7 @@ public: // all public for now
       }
     }
 
-    // check write set and lock ------------------
+    // check write set and lock. Read set is done in same loop!? ------------------
     // lock in sorted order
     uint64_t new_id = *worker_id | klockflag;
     for (uint64_t x = 0; x < write_set.size(); x++) {
