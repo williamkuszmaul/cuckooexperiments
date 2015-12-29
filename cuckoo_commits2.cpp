@@ -864,46 +864,37 @@ public: // all public for now
   // just very slightly changed kill
   bool increment_payload(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
     uint64_t slot_id, bin_id1 = 0, bin_id2, slot, payload = 0;
-    bool tried_bin = false;
-    while (!tried_bin) {
-      if (find_record(hash1, hash2, &bin_id1, &slot_id, &slot, &payload)) {
-	if (!is_claimed(slot_id)) {
-	  bool success = (slot_ids[hash1][slot]).compare_exchange_weak(slot_id, (slot_id | kclaimflag));
-	  if (success) { // if "success" failed, then we will have to check for the record again
-	    LogElt entry = LogElt(hash1, slot, hash2, bin_id1, slot_id, payload, payload + 1, true, this);
-	    assert(is_claimed(*entry.slot_id_));
-	    entry.bin_id_ = nullptr;
-	    write_set->push_back(entry);
-	    return true; // doesn't need to update bin id
-	  }
+    if (find_record(hash1, hash2, &bin_id1, &slot_id, &slot, &payload)) {
+      if (!is_claimed(slot_id)) {
+	bool success = (slot_ids[hash1][slot]).compare_exchange_weak(slot_id, (slot_id | kclaimflag));
+	if (success) { // if "success" failed, then we will have to check for the record again
+	  LogElt entry = LogElt(hash1, slot, hash2, bin_id1, slot_id, payload, payload + 1, true, this);
+	  assert(is_claimed(*entry.slot_id_));
+	  entry.bin_id_ = nullptr;
+	  write_set->push_back(entry);
+	  return true; // doesn't need to update bin id
 	}
-	cout<<"kill contention abort!"<<endl;
-	// If you get here, then the slot was claimed, and its time to abort the entire transaction
-	return false;
-      } else {
-	tried_bin = true;
       }
+      cout<<"kill contention abort!"<<endl;
+      // If you get here, then the slot was claimed, and its time to abort the entire transaction
+      return false;
     }
-    tried_bin = false;
-    while (!tried_bin) {
-      if (find_record(hash2, hash1, &bin_id2, &slot_id, &slot, &payload)) {
-	if (!is_claimed(slot_id)) {
-	  bool success = (slot_ids[hash2][slot]).compare_exchange_weak(slot_id, slot_id | kclaimflag);
-	  if (success) {
-	    LogElt entry = LogElt(hash2, slot, hash1, bin_id2, slot_id, payload, payload + 1, true, this);
-	    entry.bin_id_ = nullptr;
-	    write_set->push_back(entry);
-	    return true;  // doesn't need to update bin id
-	  }
+    if (find_record(hash2, hash1, &bin_id2, &slot_id, &slot, &payload)) {
+      if (!is_claimed(slot_id)) {
+	bool success = (slot_ids[hash2][slot]).compare_exchange_weak(slot_id, slot_id | kclaimflag);
+	if (success) {
+	  LogElt entry = LogElt(hash2, slot, hash1, bin_id2, slot_id, payload, payload + 1, true, this);
+	  entry.bin_id_ = nullptr;
+	  write_set->push_back(entry);
+	  return true;  // doesn't need to update bin id
 	}
-	cout<<"kill contention abort!"<<endl;
-	// If you get here, then the slot was claimed, and its time to abort the entire transaction
-	return false;
-      } else {
-	tried_bin = true;
       }
+      cout<<"kill contention abort!"<<endl;
+      // If you get here, then the slot was claimed, and its time to abort the entire transaction
+      return false;
     }
-    //cout<<"Erp"<<endl;
+
+    // Now we know the record simply isn't present
     LogElt new_entry1 = LogElt(hash1, 0, hash2, bin_id1, 0, &bin_ids[hash1], nullptr,
 			       0, 0, false, this);
     LogElt new_entry2 = LogElt(hash2, 0, hash1, bin_id2, 0, &bin_ids[hash2], nullptr,
@@ -913,7 +904,6 @@ public: // all public for now
     return true;
   }
 
-  // just very slightly changed overwrite
   void read(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
     uint64_t slot_id, bin_id1 = 0, bin_id2, slot, payload = 0;
     if (find_record(hash1, hash2, &bin_id1, &slot_id, &slot, &payload)) {
@@ -928,7 +918,7 @@ public: // all public for now
       write_set->push_back(entry);
       return;
     }
-    //cout<<"Erp"<<endl;
+    // Now we know the record simply isn't present
     LogElt new_entry1 = LogElt(hash1, 0, hash2, bin_id1, 0, &bin_ids[hash1], nullptr,
 			       0, 0, false, this);
     LogElt new_entry2 = LogElt(hash2, 0, hash1, bin_id2, 0, &bin_ids[hash2], nullptr,
