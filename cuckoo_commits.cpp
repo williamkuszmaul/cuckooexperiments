@@ -124,6 +124,7 @@ public: // all public for now
     }
 
     // Verifies and locks appropriate id. NOTE: retry is not done here in this version.
+    // For reads, just does normal conditional check.
     bool conditional_lock (bool already_locked) { // locks if the id hasn't changed
       assert((expected_bin_id_ & klockflag) == 0);
       assert((expected_slot_id_ & klockflag) == 0);
@@ -228,13 +229,19 @@ public: // all public for now
     return true;
   }
 
-  // Note: Retry was implemented here separately than in cuckoo_commits2. So the implementation is slightly different.
-  // In particular, retries are all done at the very start. And then if we find at some point that we need to do another
-  // retry, then we just start the entire commit process over. The difference between doing retries at the beginning vs
-  // while taking locks may affect the speed of a small number of commits (since if a retry sneaks in between when we check
-  // for retries and when we're taking locks, then we have to release all locks and start over). But the overall affect on aborts
-  // should not be statistically significant. I only did it differently in the other version to make sure the fancier way of doing it doesn't result
-  // in any unforseen deadlocks or anything.
+  // Note: Retry was implemented here separately than in
+  // cuckoo_commits2. So the implementation is slightly different.  In
+  // particular, retries are all done at the very start. And then if
+  // we find at some point that we need to do another retry, then we
+  // just start the entire commit process over. The difference between
+  // doing retries at the beginning vs while taking locks may affect
+  // the speed of a small number of commits (since if a retry sneaks
+  // in between when we check for retries and when we're taking locks,
+  // then we have to release all locks and start over). But the
+  // overall affect on aborts should not be statistically significant
+  // (confirmed with a bit of playing around). I only did it
+  // differently in the other version to make sure the fancier way of
+  // doing it doesn't result in any unforseen deadlocks or anything.
   bool commit(vector <LogElt> &write_set, uint64_t* worker_id) {
     // // For testing only.
     // bool terminate = false;
@@ -253,7 +260,7 @@ public: // all public for now
     std::stable_sort (sorted_write_set.begin(), sorted_write_set.end(), LogElt::compare);
     int set_size = sorted_write_set.size();
 
-    // check read set and do retries now -------------------------
+    // do retries now -------------------------
 
     if (retry_on) {
       for (int x = 0; x < write_set.size(); x++) {
@@ -273,36 +280,68 @@ public: // all public for now
       }
     }
 
-    // check write set and lock. Read set is done in same loop!? ------------------
+    // check write set and lock. ------------------
     // lock in sorted order
     uint64_t new_id = *worker_id | klockflag;
     for (uint64_t x = 0; x < write_set.size(); x++) {
-      bool prev_bin_id_same = false;
-      if (sorted_write_set[x].bin_id_ != nullptr) { // need to know if we've already locked bin
-	int first_hit = x;
-	while (first_hit >= 0 && sorted_write_set[first_hit].bin_id_ == sorted_write_set[x].bin_id_) first_hit--;
-	first_hit++; // subtracted one too much
-	if (first_hit < x && sorted_write_set[first_hit].for_write_) {
-	  prev_bin_id_same = true;
+      if (sorted_write_set[x].for_write_) {
+	bool prev_bin_id_same = false;
+	if (sorted_write_set[x].bin_id_ != nullptr) { // need to know if we've already locked bin
+	  int first_hit = x;
+	  while (first_hit >= 0 && sorted_write_set[first_hit].bin_id_ == sorted_write_set[x].bin_id_) first_hit--;
+	  first_hit++; // subtracted one too much
+	  if (first_hit < x && sorted_write_set[first_hit].for_write_) {
+	    prev_bin_id_same = true;
+	  }
 	}
+	if (sorted_write_set[x].just_lock_bin_) {
+	  sorted_write_set[x].get_lock_unconditional(prev_bin_id_same);
+	} else {
+	  if (!sorted_write_set[x].conditional_lock(prev_bin_id_same)) {
+	    // Note that if we had a cycle in a path, this will catch it -- we're not allowed to edit the same slot twice in the same transaction
+	    LogElt elt = sorted_write_set[x];
+	    if (retry_on && elt.bin_id_ != nullptr && elt.slot_id_ == nullptr) {
+	      abort(sorted_write_set, x); // x tells us up to what index we need to unlock
+	      return commit(write_set, worker_id); // try again
+	    } else {
+	      abort(sorted_write_set, x); // x tells us up to what index we need to unlock
+	      return false;
+	    }
+	  }
+	}
+	if (sorted_write_set[x].slot_id_ != nullptr) new_id = max(new_id | klockflag, sorted_write_set[x].expected_slot_id_ | klockflag);
+	if (sorted_write_set[x].bin_id_ != nullptr) new_id = max(new_id | klockflag, sorted_write_set[x].expected_bin_id_ | klockflag);
       }
-      if (sorted_write_set[x].just_lock_bin_) {
-	sorted_write_set[x].get_lock_unconditional(prev_bin_id_same);
-      } else {
+    }
+
+    std::atomic_thread_fence(std::memory_order_release); // memory fence
+    std::atomic_thread_fence(std::memory_order_acquire);
+
+    // Now need verify read set now
+    for (uint64_t x = 0; x < write_set.size(); x++) {
+      if (!sorted_write_set[x].for_write_) {
+	bool prev_bin_id_same = false;
+	if (sorted_write_set[x].bin_id_ != nullptr) { // need to know if we've already locked bin
+	  int first_hit = x;
+	  while (first_hit >= 0 && sorted_write_set[first_hit].bin_id_ == sorted_write_set[x].bin_id_) first_hit--;
+	  first_hit++; // subtracted one too much
+	  if (first_hit < x && sorted_write_set[first_hit].for_write_) {
+	    prev_bin_id_same = true;
+	  }
+	}
 	if (!sorted_write_set[x].conditional_lock(prev_bin_id_same)) {
-	  // Note that if we had a cycle in a path, this will catch it -- we're not allowed to edit the same slot twice in the same transaction
 	  LogElt elt = sorted_write_set[x];
 	  if (retry_on && elt.bin_id_ != nullptr && elt.slot_id_ == nullptr) {
-	    abort(sorted_write_set, x); // x tells us up to what index we need to unlock
+	    abort(sorted_write_set, sorted_write_set.size()); 
 	    return commit(write_set, worker_id); // try again
 	  } else {
-	    abort(sorted_write_set, x); // x tells us up to what index we need to unlock
+	    abort(sorted_write_set, sorted_write_set.size()); 
 	    return false;
 	  }
 	}
+	if (sorted_write_set[x].slot_id_ != nullptr) new_id = max(new_id | klockflag, sorted_write_set[x].expected_slot_id_ | klockflag);
+	if (sorted_write_set[x].bin_id_ != nullptr) new_id = max(new_id | klockflag, sorted_write_set[x].expected_bin_id_ | klockflag);
       }
-      if (sorted_write_set[x].slot_id_ != nullptr) new_id = max(new_id | klockflag, sorted_write_set[x].expected_slot_id_ | klockflag);
-      if (sorted_write_set[x].bin_id_ != nullptr) new_id = max(new_id | klockflag, sorted_write_set[x].expected_bin_id_ | klockflag);
     }
     new_id++;
     //    assert(!terminate);
