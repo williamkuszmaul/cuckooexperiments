@@ -13,6 +13,9 @@
 #include <unistd.h>
 using namespace std;
 
+// Note: If not using cyclekick, then transaction kickout chain
+// actually leads to more aborts, because all the inserts go for the
+// same freed up slot which leads to aborts
 
 #define bin_size 8
 #define bin_num (1<<14L)
@@ -28,6 +31,7 @@ bool balance = true;
 int only_cycle = 0; // 0 to run both with and without cycle-kick mode, 1 to run just cycle-kick mode
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
+
 
 #define klockflag (((uint64_t)1)<<32)
 
@@ -196,8 +200,7 @@ public: // all public for now
     }
 
     // so we can get a global locking order // bin id, then slot id, then whether for write
-    // bins before slots because when we do a retry on a bin, we don't want to deadlock with our own slot lock
-    // In commit phase, need to do for writes first for serializability
+    // bins before slots because when we do a retry on a bin, we don't want to deadlock with our own slot lock (if we ever move up to use sophisticated retry)
     static bool compare(const LogElt &left, const LogElt &right) {
       if (left.bin_id_ != right.bin_id_) return (left.bin_id_ > right.bin_id_); // Very important nulls go last, that way bins come before slots.
       if (left.slot_id_ != right.slot_id_) return (left.slot_id_ < right.slot_id_); 
@@ -713,7 +716,8 @@ public: // all public for now
     }
   };
 
-  // does operations assigned to a particular thread=
+  // does operations assigned to a particular thread
+  // Note: May do slightly more inserts than asked, since does everything in multiples of complete batches.
   void run_thread (int *pairs, int inserts, int* local_aborts, int thread_id) { // does the inserts assigned to the thread
     vector <LogElt> write_set;
     int times_tried = 0;
@@ -860,9 +864,9 @@ public: // all public for now
   }
 
   int run() {
-    //cout<<"made it to prefill"<<endl;
-    uint64_t inserts = (uint64_t)(init_fill * (double)(bin_size * bin_num)) * 2; // have twice as many as desired prepared
-        int **hash_pairs = new int*[threads];
+    int overcount_factor = 10;
+    uint64_t inserts = (uint64_t)(init_fill * (double)(bin_size * bin_num)) * overcount_factor; // have overcount_factor times as many as desired for inserts prepared
+    int **hash_pairs = new int*[threads];
     for (int i = 0; i < threads; i++) {
       hash_pairs[i] = new int[inserts / threads * 2];
     }
@@ -881,7 +885,7 @@ public: // all public for now
     /// good link: http://stackoverflow.com/questions/10673585/start-thread-with-member-function
 
     for (uint64_t y  = 0; y < threads; y ++) {
-      thread_array.push_back(new thread(&cuckoo_table::run_thread, this, &hash_pairs[y][0], inserts / threads / 2, aborts_table + y, y));
+      thread_array.push_back(new thread(&cuckoo_table::run_thread, this, &hash_pairs[y][0], inserts / threads / overcount_factor, aborts_table + y, y));
     }
     for (uint64_t y  = 0; y < threads; y ++) {
       thread_array[y]->join();
