@@ -228,25 +228,32 @@ public: // all public for now
     return true;
   }
 
-  bool commit(vector <LogElt> write_set, uint64_t* worker_id) { // would be better to use a reference than a copy of write set
-    bool terminate = false;
-    for (uint64_t x = 0; x < write_set.size(); x++) { // just for sake of testing
-      for (uint64_t y = x + 1; y < write_set.size(); y++) {
-	if (write_set[x].for_write_ && write_set[y].for_write_ &&
-	                            write_set[x].slot_id_ != nullptr && write_set[y].slot_id_ != nullptr &&
-	    (write_set)[x].bin_ == (write_set)[y].bin_ && (write_set)[x].slot_ == (write_set)[y].slot_) {
-	  terminate = true;
-	}
-      }
-    }
+  // Note: Retry was implemented here separately than in cuckoo_commits2. So the implementation is slightly different.
+  // In particular, retries are all done at the very start. And then if we find at some point that we need to do another
+  // retry, then we just start the entire commit process over. The difference between doing retries at the beginning vs
+  // while taking locks may affect the speed of a small number of commits (since if a retry sneaks in between when we check
+  // for retries and when we're taking locks, then we have to release all locks and start over). But the overall affect on aborts
+  // is not statistically significant. I only did it differently in the other version to make sure the fancier way of doing it doesn't result
+  // in any unforseen deadlocks or anything.
+  bool commit(vector <LogElt> &write_set, uint64_t* worker_id) {
+    // // For testing only.
+    // bool terminate = false;
+    // for (uint64_t x = 0; x < write_set.size(); x++) { // just for sake of testing
+    //   for (uint64_t y = x + 1; y < write_set.size(); y++) {
+    // 	if (write_set[x].for_write_ && write_set[y].for_write_ &&
+    // 	                            write_set[x].slot_id_ != nullptr && write_set[y].slot_id_ != nullptr &&
+    // 	    (write_set)[x].bin_ == (write_set)[y].bin_ && (write_set)[x].slot_ == (write_set)[y].slot_) {
+    // 	  terminate = true;
+    // 	}
+    //   }
+    // }
 
     vector <LogElt> sorted_write_set (write_set.size());
     for (uint64_t x = 0; x < write_set.size(); x++) sorted_write_set[x] = write_set[x];
     std::stable_sort (sorted_write_set.begin(), sorted_write_set.end(), LogElt::compare);
     int set_size = sorted_write_set.size();
 
-    // check read set and do retries now-----------
-
+    // check read set and do retries now -------------------------
 
     if (retry_on) {
       for (int x = 0; x < write_set.size(); x++) {
@@ -298,7 +305,7 @@ public: // all public for now
       if (sorted_write_set[x].bin_id_ != nullptr) new_id = max(new_id | klockflag, sorted_write_set[x].expected_bin_id_ | klockflag);
     }
     new_id++;
-    assert(!terminate);
+    //    assert(!terminate);
 
     // apply in actual order
     for (uint64_t x = 0; x < write_set.size(); x++) write_set[x].apply(new_id);
@@ -522,7 +529,7 @@ public: // all public for now
     return answer;
   }
 
-  // insert that performs kickout chains as system transactions
+  // insert that performs kickout chains as system transactions. Gives kickout chain its own commit cycle
   void insert_live_kickout(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
     int touches=0;
     int bucket = pick_bucket(hash1, hash2, &touches);
@@ -576,7 +583,6 @@ public: // all public for now
       canceled_inserts[thread_id][1]++;
       return; // doesn't need to update bin id
     }
-    //cout<<"Erp"<<endl;
     LogElt new_entry1 = LogElt(hash1, 0, hash2, bin_id1, 0, &bin_ids[hash1], nullptr,
 			       0, 0, false, this);
     LogElt new_entry2 = LogElt(hash2, 0, hash1, bin_id2, 0, &bin_ids[hash2], nullptr,
@@ -600,7 +606,6 @@ public: // all public for now
       write_set->push_back(entry);
       return; // doesn't need to update bin id
     }
-    //cout<<"Erp"<<endl;
     LogElt new_entry1 = LogElt(hash1, 0, hash2, bin_id1, 0, &bin_ids[hash1], nullptr,
 			       0, 0, false, this);
     LogElt new_entry2 = LogElt(hash2, 0, hash1, bin_id2, 0, &bin_ids[hash2], nullptr,
@@ -624,7 +629,6 @@ public: // all public for now
       write_set->push_back(entry);
       return;
     }
-    //cout<<"Erp"<<endl;
     LogElt new_entry1 = LogElt(hash1, 0, hash2, bin_id1, 0, &bin_ids[hash1], nullptr,
 			       0, 0, false, this);
     LogElt new_entry2 = LogElt(hash2, 0, hash1, bin_id2, 0, &bin_ids[hash2], nullptr,
@@ -667,16 +671,6 @@ public: // all public for now
       hash1_ = -1;
       hash2_ = -1;
       operation_type_ = -1;
-    }
-    static bool compare(const Op &left, const Op &right) {
-      if (left.operation_type_ != right.operation_type_) {
-	if (left.operation_type_ * right.operation_type_ != 6) { // deletes and overwrites don't get sorted with respect to each other
-	  return (left.operation_type_ < right.operation_type_);
-	}
-      }
-      if (left.hash1_ != right.hash1_) return (left.hash1_ < right.hash1_);
-      if (left.hash2_ != right.hash2_) return (left.hash2_ < right.hash2_);
-      return false;
     }
   };
 
