@@ -827,14 +827,17 @@ public: // all public for now
   int run() {
     //cout<<"made it to prefill"<<endl;
     uint64_t inserts = (uint64_t)(init_fill * (double)(bin_size * bin_num)) * 2; // have twice as many as desired prepared
-    int hash_pairs [threads][inserts / threads][2]; // NOTE: SEGMENTATION FAULT HERE FOR LARGE NUMBER OF INSERTS IS BECAUSE OF STACK OVERFLOW.
-    // WOULD HAVE TO ALLOCATE THIS TO HEAP (EASIEST WAY WOULD BE TO USE VECTOR)
+        int **hash_pairs = new int*[threads];
+    for (int i = 0; i < threads; i++) {
+      hash_pairs[i] = new int[inserts / threads * 2];
+    }
+    //int hash_pairs [threads][inserts / threads][2];
     for (uint64_t t  = 0; t < threads; t ++) {
       for (uint64_t pair = 0; pair < inserts / threads; pair++) {
-	hash_pairs[t][pair][0] = rand() % bin_num;
-	hash_pairs[t][pair][1] = rand() % bin_num;
-	pairs_inserted.push_back(hash_pairs[t][pair][0]);
-	pairs_inserted.push_back(hash_pairs[t][pair][1]);
+	hash_pairs[t][pair * 2] = rand() % bin_num;
+	hash_pairs[t][pair * 2 + 1] = rand() % bin_num;
+	pairs_inserted.push_back(hash_pairs[t][pair * 2]);
+	pairs_inserted.push_back(hash_pairs[t][pair * 2 + 1]);
       }
     }
     int* aborts_table = new int[threads];
@@ -843,7 +846,7 @@ public: // all public for now
     /// good link: http://stackoverflow.com/questions/10673585/start-thread-with-member-function
 
     for (uint64_t y  = 0; y < threads; y ++) {
-      thread_array.push_back(new thread(&cuckoo_table::run_thread, this, &hash_pairs[y][0][0], inserts / threads / 2, aborts_table + y, y));
+      thread_array.push_back(new thread(&cuckoo_table::run_thread, this, &hash_pairs[y][0], inserts / threads / 2, aborts_table + y, y));
     }
     for (uint64_t y  = 0; y < threads; y ++) {
       thread_array[y]->join();
@@ -904,10 +907,11 @@ int main() {
     vector <int> aborts(trial_num);
     double av_collisions = 0;
     for(int trial=0; trial < trial_num; trial++) {
-      cuckoo_table table1;
-      if (type == 0) table1.cyclekick = false;
-      if (type == 1) table1.cyclekick = true;
-      aborts[trial] = table1.run();
+      cuckoo_table *table1 = new cuckoo_table();
+      if (type == 0) table1->cyclekick = false;
+      if (type == 1) table1->cyclekick = true;
+      aborts[trial] = table1->run();
+      delete table1;
     }
     cout<<" bin size: "<<bin_size
 	<<" bin number: "<<bin_num

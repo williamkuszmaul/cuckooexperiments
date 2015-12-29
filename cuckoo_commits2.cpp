@@ -13,18 +13,6 @@
 #include <unistd.h>
 using namespace std;
 
-// Problems: retry_on does't turn off properly -- actually it seems like maybe it does? But why is it bad even on a single thread? Because the system transaction!
-// What is the deal with unconditionally locking a bin? When and why do we do that?
-//   Answer: Not used except maybe in non-system transaction chaining. In particular, in that case
-///  we do not need to prove that the bin doesn't contain a certain record (since we actually know
-//   where that record is.) So although we need to update the bin, we don't need to add its id to the read set
-//   Should update comments to reflect this.
-// Need to do basic clean up stuff
-// In current settings, hash1 is all messed up for some reason
-//    x is getting larger thant he number of hash pairs generated for the thread. I'll have to look into this later... In particular, what does inserts_per_overwrite have to do with this (seems like a silly and easy bug to fix). Ahh, it appears to have nothing to do with it... It's caued by insertsperkill being one!
-// Understand how elts are selected for updates, deletes. How often do these operatios fail?
-//    Have to be able to describe methodology for this in paper. I understand nwo.
-
 // Good memory fence source: http://preshing.com/20130922/acquire-and-release-fences/
 
 #define bin_size 8
@@ -37,10 +25,10 @@ int inserts_per_overwrite = 1;
 unsigned long long batch = 100; // this many operations are done in each commit cycle
 int trial_num = 100;
 uint64_t maxchain = 500;
-bool balance = true;
+bool balance = false;
 int only_cycle = 0; // 0 to run both with and without cycle-kick, 1 to run just cyclekick
 bool retry_on = false; // whether or not to do retries of verifications that a record _isn't_ present
-bool live_kickout = true; // whether or not to do kickout chains as system transaction
+bool live_kickout = false; // whether or not to do kickout chains as system transaction
 
 #define klockflag (((uint64_t)1)<<31)
 #define kclaimflag (((uint64_t)1)<<32)
