@@ -17,8 +17,8 @@ using namespace std;
 // actually leads to more aborts, because all the inserts go for the
 // same freed up slot which leads to aborts
 
-// Note: Cyclekick does poorly with retry off, because it leads to slightly longer chains in parallel,
-// which makes more bin_ids change, which is very bad
+// Note: Things go very poorly with Cyclekick on, system transaction on, and retry off. In particular, 
+
 
 #define bin_size 8
 #define bin_num (1<<14L)
@@ -31,7 +31,7 @@ unsigned long long batch = 100; // this many operations are done in each commit 
 int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
-int only_cycle = 1; // 0 to run both with and without cycle-kick mode, 1 to run just cycle-kick mode
+int only_cycle = 0; // 0 to run both with and without cycle-kick mode, 1 to run just cycle-kick mode
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
 int overcount_factor = 10; // Prepare number of inserts desired * this hash pairs
@@ -721,7 +721,6 @@ public: // all public for now
 
   // does operations assigned to a particular thread
   // When an abort happens, we do not try the transaction again. We just move on.
-  // Note: May do slightly more inserts than asked, since does everything in multiples of complete batches.
   // With load of 2, 1, 2, 2, ratio inserts, deletes, overwrites, reads, we get one insert for every seven operations, meaning that a batch of 100 results in 14 inserts. So we're over inserting by at most 210, which is <.2 percent of 2^14 * 8.
   void run_thread (int *pairs, int inserts, int* local_aborts, int thread_id) { // does the inserts assigned to the thread
     vector <LogElt> write_set;
@@ -792,7 +791,8 @@ public: // all public for now
 	if (elt.operation_type_ == 3) increment_payload(elt.hash1_, elt.hash2_, &write_set, thread_id);
 	if (elt.operation_type_ == 4 && !live_kickout) insert(elt.hash1_, elt.hash2_, &write_set, thread_id);
 	if (elt.operation_type_ == 4 && live_kickout) insert_live_kickout(elt.hash1_, elt.hash2_, &write_set, thread_id);
-
+	if (num_inserts[thread_id][1] + num_inserts[thread_id][0] >= inserts) break; // In this case,
+	// we should cut batch short so we don't fill table beyond desired capacity.
       }
 
       // commit phase

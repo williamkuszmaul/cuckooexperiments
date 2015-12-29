@@ -964,7 +964,6 @@ public: // all public for now
   }
 
   // When an abort happens, we do not try the transaction again. We just move on.
-  // Note: May do slightly more inserts than asked, since does everything in multiples of complete batches.
   void run_thread (int *pairs, int inserts, int* local_aborts, int thread_id) { 
     vector <LogElt> write_set;
     //    int times_tried = 0; // Retries for aborts not done anymore
@@ -1045,6 +1044,8 @@ public: // all public for now
 	  claim_contention_abort = true;
 	  break;
 	}
+	if (num_inserts[thread_id][1] + num_inserts[thread_id][0] >= inserts) break; // In this case,
+	// we should cut batch short so we don't fill table beyond desired capacity.
       }
       
       // commit phase
