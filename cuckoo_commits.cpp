@@ -44,9 +44,10 @@ public: // all public for now
 
 
   // Defining the write and read sets (which are merged as one thing here) =======================================================
-  // Requirements for write set to be valid: can't modify/read same record twice in same transaction
+  // Requirements for write set to be valid: can't modify or read same record twice in same transaction
   // (will lead to an abort). Would be easy to alleviate requirement for reads.
-  // each write_set element is required to have one of either bin id or slot id be nul.
+  // Each write_set element is required to have one of either bin id or slot id be null.
+  // Whichever is not null is the id which will be verified in the verification phase.
   struct LogElt {
     uint64_t bin_;
     uint64_t slot_;
@@ -95,7 +96,6 @@ public: // all public for now
       owner_ = owner;
       for_write_ = for_write;
       bin_id_ = &(owner_->bin_ids[bin_]);
-      //bin_id_ = nullptr; // if you want to turn off bin ids
       expected_payload_ = expected_payload;
       new_payload_ = new_payload;
       slot_id_ = &(owner_->slot_ids[bin_][slot_]);
@@ -117,11 +117,13 @@ public: // all public for now
       while (!grabbed) {
 	expected_bin_id_ = *bin_id_;
 	while ((expected_bin_id_ & klockflag) != 0) expected_bin_id_ = *bin_id_;
+	// ---------------------------------------------------- SHOULD DO SOME SORT OF PAUSE IN ABOVE LOOP -------------------------------------
 	uint64_t id_guess = expected_bin_id_;
 	grabbed = (*bin_id_).compare_exchange_weak(id_guess, id_guess | klockflag);
       }
     }
 
+    // Verifies and locks appropriate id. NOTE: retry is not done here in this version.
     bool conditional_lock (bool already_locked) { // locks if the id hasn't changed
       assert((expected_bin_id_ & klockflag) == 0);
       assert((expected_slot_id_ & klockflag) == 0);
@@ -192,12 +194,12 @@ public: // all public for now
       }
     }
 
-    // so we can get a global locking order
-    // need to do for write first for serializability
+    // so we can get a global locking order // bin id, then slot id, then whether for write
+    // bins before slots because when we do a retry on a bin, we don't want to deadlock with our own slot lock
+    // In commit phase, need to do for writes first for serializability
     static bool compare(const LogElt &left, const LogElt &right) {
-      if (left.bin_id_ != right.bin_id_) return (left.bin_id_ > right.bin_id_); // Very important nulls go last, because retry needs to not hit deadlock with owner
-      // transaction when trying to look at slots!!
-      if (left.slot_id_ != right.slot_id_) return (left.slot_id_ < right.slot_id_); // want to handle bin cases before id cases to avoid deadlock with own transaction
+      if (left.bin_id_ != right.bin_id_) return (left.bin_id_ > right.bin_id_); // Very important nulls go last, that way bins come before slots.
+      if (left.slot_id_ != right.slot_id_) return (left.slot_id_ < right.slot_id_); 
       return (left.for_write_ > right.for_write_); // reads after writes
     }
   };
