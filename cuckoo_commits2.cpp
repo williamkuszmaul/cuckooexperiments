@@ -54,9 +54,10 @@ public: // all public for now
   bool cyclekick;
 
   // Defining the write and read sets (which are merged as one thing here) =======================================================
-  // Requirements for write set to be valid: can't modify/read same record twice in same transaction
+  // Requirements for write set to be valid: can't modify or read same record twice in same transaction
   // (will lead to an abort). Would be easy to alleviate requirement for reads.
-  // each write_set element is required to have one of either bin id or slot id be nul.
+  // Each write_set element is required to have one of either bin id or slot id be null.
+  // Whichever is not null is the id which will be verified in the verification phase.
   struct LogElt {
     uint64_t bin_;
     uint64_t slot_;
@@ -105,7 +106,6 @@ public: // all public for now
       owner_ = owner;
       for_write_ = for_write;
       bin_id_ = &(owner_->bin_ids[bin_]);
-      //bin_id_ = nullptr; // if you want to turn off bin ids
       expected_payload_ = expected_payload;
       new_payload_ = new_payload;
       slot_id_ = &(owner_->slot_ids[bin_][slot_]);
@@ -118,7 +118,7 @@ public: // all public for now
     }
 
     void get_lock_unconditional(bool already_done) { // locks bin unconditionally
-      if (already_done) {
+      if (already_done) { // If we've already locked the bin in the commit phase, update our expected_bin+id
 	expected_bin_id_ = *bin_id_ - klockflag;
 	return;
       }
@@ -132,9 +132,14 @@ public: // all public for now
       }
     }
 
-    // verification magic
-    // false if we need to abort
-    // includes built in retry mechanism for verifying records aren't in bin
+    // Verification function:
+    // If write_set element is verifying a bin_id:
+    //   -- verifies bin_id is still expected_bin_id, and does a local retry if it isn't
+    //   -- If bin_id is not already locked in this transaction, it locks it now.
+    // If write_set element is verifying a slot_id:
+    //   -- verifies slot_id hasn't changed and locks slot. (for writes, claims mean we don't actually have to verify slot_id hasn't changed; is guaranteed)
+    // Returns false if we need to abort
+    // 
     bool conditional_verify (bool already_locked, bool retry_on) { // locks if the id hasn't changed // also deals with read set
       assert(already_locked || (expected_bin_id_ & klockflag) == 0);
       assert((expected_slot_id_ & klockflag) == 0);
@@ -154,7 +159,7 @@ public: // all public for now
 	    expected_bin_id_ = bin_id;
 	  }
 	  return true;
-	} else if (!for_write_) { // verifies non-existance of relavent record in bin
+	} else if (!for_write_) { // verifies non-existance of relevent record in bin
 	  if (expected_bin_id_ != *bin_id_) {
 	    assert(*(bin_id_) >= expected_bin_id_);
 	    // do a retry
@@ -208,6 +213,7 @@ public: // all public for now
       return true;
     }
 
+    // Applies edits
     void apply (uint64_t new_id) { // applies with new id which should be maximum of ids in write set
       if ((new_id & klockflag) != 0) new_id -= klockflag;
       if ((new_id & kclaimflag) != 0) new_id -= kclaimflag;
@@ -236,28 +242,24 @@ public: // all public for now
 	if (bin_id_ != nullptr && unlock_bin) {
 	  assert((*bin_id_ & klockflag) != 0);
 	  *bin_id_ = *bin_id_ - klockflag;
-	  if ((expected_bin_id_ | klockflag)!= 0) expected_bin_id_ -= klockflag; // may be reusing it in a second
+	  if ((expected_bin_id_ | klockflag)!= 0) expected_bin_id_ -= klockflag; // may be reusing it in a second if for local retry
 	}
 	if (slot_id_ != nullptr) {
 	  assert((*slot_id_ & klockflag) != 0);
 	  assert((*slot_id_ & kclaimflag) != 0);
 	  *slot_id_ = *slot_id_ - klockflag;
 	  if (kill_flag) *slot_id_ = *slot_id_ - kclaimflag;
-	  if ((expected_slot_id_ | klockflag)!= 0) expected_slot_id_ -= klockflag; // may be reusing it in a second
+	  if ((expected_slot_id_ | klockflag)!= 0) expected_slot_id_ -= klockflag; // may be reusing it in a second if for local retry
 	}
       }
     }
 
-    // so we can get a global locking order // sorted by whether for write, then bin id, then slot id
+    // so we can get a global locking order // bin id, then slot id, then whether for write
     // bins before slots because when we do a retry on a bin, we don't want to deadlock with our own slot lock
     // In commit phase, need to do for writes first for serializability
-    // In commit phase, in order to
-    // avoid deadlock with overwrites and deletes from our own transaction during retry, we
-    // unconditionally lock bin id for deletes and overwrites.
     static bool compare(const LogElt &left, const LogElt &right) {
-      if (left.bin_id_ != right.bin_id_) return (left.bin_id_ > right.bin_id_); // Very important nulls go last, because retry needs to not hit deadlock with owner
-      // transaction when trying to look at slots!!
-      if (left.slot_id_ != right.slot_id_) return (left.slot_id_ < right.slot_id_); // want to handle bin cases before id cases to avoid deadlock with own id
+      if (left.bin_id_ != right.bin_id_) return (left.bin_id_ > right.bin_id_); // Very important nulls go last, that way bins come before slots.
+      if (left.slot_id_ != right.slot_id_) return (left.slot_id_ < right.slot_id_); 
       return (left.for_write_ > right.for_write_); // reads after writes
     }
   };
