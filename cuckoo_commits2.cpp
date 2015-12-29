@@ -13,6 +13,15 @@
 #include <unistd.h>
 using namespace std;
 
+// Things that can be confusing:
+// With retry off, why are there aborts even when doing only inserts on a single thread?
+//   Answer: Because the system transaction kickout change may change a bin id!
+// What is the deal with unconditionally locking a bin? When and why do we do that?
+//   Answer: Not used except maybe in non-system transaction chaining. In particular, in that case
+///  we do not need to prove that the bin doesn't contain a certain record (since we actually know
+//   where that record is.) So although we need to update the bin, we don't need to add its id to the read set
+//   Should update comments to reflect this.
+
 // Good memory fence source: http://preshing.com/20130922/acquire-and-release-fences/
 
 #define bin_size 8
@@ -25,10 +34,10 @@ int inserts_per_overwrite = 1;
 unsigned long long batch = 100; // this many operations are done in each commit cycle
 int trial_num = 100;
 uint64_t maxchain = 500;
-bool balance = false;
+bool balance = true;
 int only_cycle = 0; // 0 to run both with and without cycle-kick, 1 to run just cyclekick
-bool retry_on = false; // whether or not to do retries of verifications that a record _isn't_ present
-bool live_kickout = false; // whether or not to do kickout chains as system transaction
+bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
+bool live_kickout = true; // whether or not to do kickout chains as system transaction
 
 #define klockflag (((uint64_t)1)<<31)
 #define kclaimflag (((uint64_t)1)<<32)
