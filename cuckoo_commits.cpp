@@ -13,12 +13,40 @@
 #include <unistd.h>
 using namespace std;
 
+// The natural progression for improving performance is to add
+// retry_on, cycle_kick, and then system transaction. This is
+// explained in more detail in the following two notes. Note in particular,
+// that system transaction (if we use non-claiming system) is useless without
+// cyclekick. Also note in particular, that unless we use claims, cyclekcik
+// usually makes kickout chains LONGER because we have a delete-heavy load,
+// which means cyclekick is missing empty slots. But since it does avoid slot
+// contention and makes system transaction kickout chains feasible, it's still
+// worth implementing in this situation, as long as retry_on = true.
+
 // Note: If not using cyclekick, then transaction kickout chain
 // actually leads to more aborts, because all the inserts go for the
 // same freed up slot which leads to aborts
 
-// Note: Things go very poorly with Cyclekick on, system transaction on, and retry off. In particular, 
-
+// Note: Things go very poorly with Cyclekick on, system transaction
+// on, and retry off. Even on one thread. This is because the
+// concurrency benefits of cyclekick are way outweighed by the
+// downside of cyclekick leading to longer kickout chains here. These
+// kickout chains lead to bin ids being changed, which causes
+// aborts. Note that cyclekick makes kickout chains longer here
+// because chains end up not greedily selecting an empty slot in a
+// bin. In this case, we would rather chains compete for the last
+// empty slot of a bin than visit many bins and avoid slot contention.
+// In other words, cyclekick reduces slot contention but increases bin
+// contention. (With claim flags introduced cyclekick will reduce
+// kickout chain length because we can go for empty slots and then do
+// cyclekick).  This effect wasn't as prominant when we were allowing
+// retries after aborts.  I suspect this is because trying the same
+// batch of inserts over and over again lets the cyclekick eventually
+// find okay-ishly short path for every insert. But we were counting
+// each of those tries (after the first one) as the same, without
+// letting it add to our count for the number of aborts.
+// In fact, for these same reasons, cycle kick makes things worse
+// UNTIL we turn on retry_on
 
 #define bin_size 8
 #define bin_num (1<<14L)
