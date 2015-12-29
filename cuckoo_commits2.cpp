@@ -38,7 +38,7 @@ bool balance = true;
 int only_cycle = 0; // 0 to run both with and without cycle-kick, 1 to run just cyclekick
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
-
+int overcount_factor = 10;
 #define klockflag (((uint64_t)1)<<31)
 #define kclaimflag (((uint64_t)1)<<32)
 
@@ -963,10 +963,11 @@ public: // all public for now
     return true;
   }
 
+  // When an abort happens, we do not try the transaction again. We just move on.
   // Note: May do slightly more inserts than asked, since does everything in multiples of complete batches.
   void run_thread (int *pairs, int inserts, int* local_aborts, int thread_id) { 
     vector <LogElt> write_set;
-    int times_tried = 0;
+    //    int times_tried = 0; // Retries for aborts not done anymore
     int number_used = 0;
     uint64_t worker_id = 0;
     int x = 0; // bad variable name // counts position in pairs, which stores the hash pairs we get to use
@@ -976,6 +977,7 @@ public: // all public for now
 
     while (num_inserts[thread_id][0] < inserts) {
       // build a batch
+      assert (x < inserts * overcount_factor); // asserting we generated enough hashes for the test
       while (number_used < batch) { 
 	if (transaction_check(&transaction_pairs, pairs[2*x], pairs[2*x+1])) {
 	  number_used++;
@@ -1054,28 +1056,13 @@ public: // all public for now
       } else {
 	aborted = !commit(write_set, &worker_id);
       }
-      if (aborted) { // need to retry
-	//cout<<"Attempted abort"<<endl;
-	if (times_tried < 20) {
-	  if (times_tried == 0) *local_aborts = *local_aborts + 1;
-	  //cout<<number_used<<endl;
-	  //cout<<"Went with retry"<<endl;
-	  x = prev_x;
-	  times_tried++;
-	  if (times_tried == 15) {
-	    cout<<"Getting annoyed..."<<endl;
-	  }
-	} else {
-	  times_tried = 0;
-	  prev_x = x; // really giving up now
-	  cout<<"Weirdness"<<endl;
-	}
+      if (aborted) {
+	*local_aborts = *local_aborts + 1;
       }
       if (!aborted) {
-	prev_x = x;
 	num_inserts[thread_id][0] += num_inserts[thread_id][1];
-	times_tried = 0;
       }
+      prev_x = x;
       write_set.resize(0);
       operation_set.resize(0);
       number_used = 0;
@@ -1136,7 +1123,6 @@ public: // all public for now
   }
 
   int run() {
-    int overcount_factor = 10;
     uint64_t inserts = (uint64_t)(init_fill * (double)(bin_size * bin_num)) * overcount_factor; // have overcount_factor times as many as desired for inserts prepared
     int **hash_pairs = new int*[threads];
     for (int i = 0; i < threads; i++) {
@@ -1185,7 +1171,7 @@ public: // all public for now
     pairs_inserted.resize(0);
     for (int x = 0; x < threads; x++) {
       num_inserts[x][0] = 0;
-      num_inserts[x][0] = 0;
+      num_inserts[x][1] = 0;
     }
     for(int x=0; x< bin_num; x++) {
       kickout_index[x]=0;

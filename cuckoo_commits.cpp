@@ -17,6 +17,9 @@ using namespace std;
 // actually leads to more aborts, because all the inserts go for the
 // same freed up slot which leads to aborts
 
+// Note: Cyclekick does poorly with retry off, because it leads to slightly longer chains in parallel,
+// which makes more bin_ids change, which is very bad
+
 #define bin_size 8
 #define bin_num (1<<14L)
 #define threads (uint64_t) 15
@@ -28,10 +31,10 @@ unsigned long long batch = 100; // this many operations are done in each commit 
 int trial_num = 100;
 uint64_t maxchain = 500;
 bool balance = true;
-int only_cycle = 0; // 0 to run both with and without cycle-kick mode, 1 to run just cycle-kick mode
+int only_cycle = 1; // 0 to run both with and without cycle-kick mode, 1 to run just cycle-kick mode
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
-
+int overcount_factor = 10; // Prepare number of inserts desired * this hash pairs
 
 #define klockflag (((uint64_t)1)<<32)
 
@@ -571,7 +574,7 @@ public: // all public for now
     return answer;
   }
 
-  // insert that performs kickout chains as system transactions. Gives kickout chain its own commit cycle
+  // insert than performs kickout chains as system transactions. Gives kickout chain its own commit cycle
   void insert_live_kickout(int hash1, int hash2, vector <LogElt>* write_set, int thread_id) {
     int touches=0;
     int bucket = pick_bucket(hash1, hash2, &touches);
@@ -717,10 +720,12 @@ public: // all public for now
   };
 
   // does operations assigned to a particular thread
+  // When an abort happens, we do not try the transaction again. We just move on.
   // Note: May do slightly more inserts than asked, since does everything in multiples of complete batches.
+  // With load of 2, 1, 2, 2, ratio inserts, deletes, overwrites, reads, we get one insert for every seven operations, meaning that a batch of 100 results in 14 inserts. So we're over inserting by at most 210, which is <.2 percent of 2^14 * 8.
   void run_thread (int *pairs, int inserts, int* local_aborts, int thread_id) { // does the inserts assigned to the thread
     vector <LogElt> write_set;
-    int times_tried = 0;
+    // int times_tried = 0; Not doing global retries on aborts anymore. 
     int number_used = 0;
     uint64_t worker_id = 0;
     int x = 0;
@@ -730,6 +735,7 @@ public: // all public for now
 
     while (num_inserts[thread_id][0] < inserts) {
       //build batch
+      assert (x < inserts * overcount_factor); // asserting we generated enough hashes for the test
       while (number_used < batch) {
 	if (transaction_check(&transaction_pairs, pairs[2*x], pairs[2*x+1])) {
 	  number_used++;
@@ -791,28 +797,13 @@ public: // all public for now
 
       // commit phase
       bool aborted = !commit(write_set, &worker_id);
-      if (aborted) { // need to retry
-	//cout<<"Attempted abort"<<endl;
-	if (times_tried < 20) {
-	  if (times_tried == 0) *local_aborts = *local_aborts + 1;
-	  //cout<<number_used<<endl;
-	  //cout<<"Went with retry"<<endl;
-	  x = prev_x;
-	  times_tried++;
-	  if (times_tried == 15) {
-	    //cout<<"Getting annoyed..."<<endl;
-	  }
-	} else {
-	  times_tried = 0;
-	  prev_x = x; // really giving up now
-	  cout<<"Weirdness"<<endl;
-	}
+      if (aborted) {
+	*local_aborts = *local_aborts + 1;
       }
       if (!aborted) {
-	prev_x = x;
 	num_inserts[thread_id][0] += num_inserts[thread_id][1];
-	times_tried = 0;
       }
+      prev_x = x;
       write_set.resize(0);
       operation_set.resize(0);
       number_used = 0;
@@ -858,13 +849,12 @@ public: // all public for now
       }
       if (!passed) missing_count ++;
     }
-    if(missing_count <= expected_misses) return true; //when #deletes = #inserts, this is a good test of deletes
+    if(missing_count <= expected_misses) return true;
     cout<<"Elements lost! "<<missing_count<<" "<<expected_misses<<endl;
     return false;
   }
 
   int run() {
-    int overcount_factor = 10;
     uint64_t inserts = (uint64_t)(init_fill * (double)(bin_size * bin_num)) * overcount_factor; // have overcount_factor times as many as desired for inserts prepared
     int **hash_pairs = new int*[threads];
     for (int i = 0; i < threads; i++) {
@@ -909,7 +899,7 @@ public: // all public for now
     pairs_inserted.resize(0);
     for (int x = 0; x < threads; x++) {
       num_inserts[x][0] = 0;
-      num_inserts[x][0] = 0;
+      num_inserts[x][1] = 0;
     }
     for(int x=0; x< bin_num; x++) {
       kickout_index[x]=0;
@@ -940,7 +930,7 @@ int getmax(vector<int> array) {
 
 int main() {
   srand (time(NULL)); //Initialize random seed
-  //srand (0); //Initialize random seed
+  //srand  (0); //Initialize random seed
   for(int type = only_cycle; type < 2; type++) {
     cout<<"----------"<<endl;
     vector <int> aborts(trial_num);
