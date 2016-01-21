@@ -63,6 +63,7 @@ int only_cycle = 0; // 0 to run both with and without cycle-kick mode, 1 to run 
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
 int overcount_factor = 10; // Prepare number of inserts desired * this hash pairs
+bool verbose = false;
 
 #define klockflag (((uint64_t)1)<<32)
 
@@ -844,7 +845,7 @@ public: // all public for now
   // Tests that everything went through hash table like it was supposed to
   bool end_test(int total_inserts, int total_aborts) { // just to check for bugs in program
     // Now to test that everything went correctly
-    cout<<"Total aborts: "<<total_aborts<<endl;
+    if (verbose) cout<<"Total aborts: "<<total_aborts<<endl;
     int missing_count = 0;
     int positions_needed = total_inserts;
     for(int x=0; x<bin_num; x++) {
@@ -956,13 +957,80 @@ int getmax(vector<int> array) {
   return answer;
 }
 
+void run_all_tests() {
+  srand (time(NULL)); //Initialize random seed
+  bool cyclekick;
+  balance = true;
+  for (int table_type = 0; table_type < 4; table_type++) {
+    switch ( table_type ) {
+    case 0:
+      cyclekick = false;
+      retry_on = false;
+      live_kickout = false;
+      break;
+    case 1:
+      cyclekick = false;
+      retry_on = true;
+      live_kickout = false;
+      break;
+    case 2:
+      cyclekick = true;
+      retry_on = true;
+      live_kickout = false;
+      break;
+    case 3:
+      cyclekick = true;
+      retry_on = true;
+      live_kickout = true;
+      break;
+    default:
+      break;
+    }
+    for (int load_type = 0; load_type <= 1; load_type++) {
+      if (load_type == 0) {
+	inserts_per_kill = 2;
+	inserts_per_read = 1;
+	inserts_per_overwrite = 1;
+      } else {
+	inserts_per_kill = (1 << 27);
+	inserts_per_read = 1;
+	inserts_per_overwrite = 1;
+      }
+      cout<<" bin size: "<<bin_size
+	  <<" bin number: "<<bin_num
+	  <<" threads: "<<threads
+	  <<" inserts per kill: "<<inserts_per_kill
+	  <<" inserts per read: "<<inserts_per_read
+	  <<" inserts per overwrite "<<inserts_per_overwrite
+	  <<" batching: "<<batch
+	  <<" trials: "<<trial_num
+	  <<" max chain: "<<maxchain
+	  <<" balance on: "<<balance
+	  <<" cycle-kick on: "<<cyclekick<<endl;
+      cout<<"Init_fill average_number_of_aborts_per_trial"<<endl;
+      for (init_fill = .6; init_fill < .96; init_fill += .01) {
+	vector <int> aborts(trial_num);
+	for (int trial=0; trial < trial_num; trial++) {
+	  cuckoo_table *table1 = new cuckoo_table();
+	  table1->cyclekick = cyclekick;
+	  aborts[trial] = table1->run();
+	  delete table1;
+	}
+	cout<<init_fill<<" "<<getav(aborts)<<endl;
+      }
+      cout<<endl;
+    }
+  }
+}
+    
 int main() {
+  run_all_tests();
+  return 0;
   srand (time(NULL)); //Initialize random seed
   //srand  (0); //Initialize random seed
   for(int type = only_cycle; type < 2; type++) {
     cout<<"----------"<<endl;
     vector <int> aborts(trial_num);
-    double av_collisions = 0;
     for(int trial=0; trial < trial_num; trial++) {
       cuckoo_table *table1 = new cuckoo_table();
       if (type == 0) table1->cyclekick = false;

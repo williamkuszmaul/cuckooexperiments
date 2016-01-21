@@ -39,6 +39,7 @@ int only_cycle = 0; // 0 to run both with and without cycle-kick, 1 to run just 
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
 bool live_kickout = true; // whether or not to do kickout chains as system transaction
 int overcount_factor = 10;
+bool verbose = false;
 #define klockflag (((uint64_t)1)<<31)
 #define kclaimflag (((uint64_t)1)<<32)
 
@@ -152,7 +153,7 @@ public: // all public for now
 	    // do a retry
 	    uint64_t hash1 =bin_, hash2 = new_entry_, bin_id = 0;
 	    if (!retry_on || owner_->find_record_ignore_bin_lock(hash1, hash2, &bin_id)) {
-	      if (retry_on) cout<<"Alreadly locked case broke "<<for_write_<<endl;
+	      if (retry_on && verbose) cout<<"Alreadly locked case broke "<<for_write_<<endl;
 	      return false; // record state of existance changed
 	    }
 	    // if we didn't find the record, then we just fix the write set element
@@ -165,7 +166,7 @@ public: // all public for now
 	    // do a retry
 	    uint64_t hash1 =bin_, hash2 = new_entry_, bin_id = 0, slot_id = 0, slot = 0, payload = 0;
 	    if (!retry_on || owner_->find_record(hash1, hash2, &bin_id, &slot_id, &slot, &payload)) {
-	      if (retry_on) cout<<"Read case broke 1"<<endl;
+	      if (retry_on && verbose) cout<<"Read case broke 1"<<endl;
 	      return false; // record state of existance changed
 	    }
 	    // if we didn't find the record, then we just fix the write set element
@@ -180,7 +181,7 @@ public: // all public for now
 	      // do a retry
 	      uint64_t hash1 =bin_, hash2 = new_entry_, bin_id = 0, slot_id = 0, slot = 0, payload = 0;
 	      if (!retry_on || owner_->find_record(hash1, hash2, &bin_id, &slot_id, &slot, &payload)) {
-		if (retry_on) cout<<"Write case busted"<<endl;
+		if (retry_on && verbose ) cout<<"Write case busted"<<endl;
 		return false; // record state of existance changed
 	      }
 	      // if we didn't find the record, then we just fix the write set element
@@ -405,7 +406,7 @@ public: // all public for now
 	      uint64_t hash1 = elt.bin_, hash2 = elt.new_entry_, bin_id = 0, slot_id = 0, slot = 0, payload = 0;
 	      if (!retry_on || find_record(hash1, hash2, &bin_id, &slot_id, &slot, &payload)) {
 		abort(sorted_write_set, 0, true); // unclaim all
-		if (retry_on) cout<<"Read case broke2"<<endl;
+		if (retry_on && verbose) cout<<"Read case broke2"<<endl;
 		return false; // record state of existance changed
 	      }
 	      elt.expected_bin_id_ = bin_id;
@@ -831,7 +832,7 @@ public: // all public for now
 	}
       }
       // If you get here, then the slot was claimed, and its time to abort the entire transaction
-      cout<<"kill contention abort!"<<endl;
+      if (verbose) cout<<"kill contention abort!"<<endl;
       return false;
     }
     if (find_record(hash2, hash1, &bin_id2, &slot_id, &slot, &payload)) {
@@ -845,7 +846,7 @@ public: // all public for now
 	  return true;  // doesn't need to update bin id
 	}
       }
-      cout<<"kill contention abort!"<<endl;
+      if (verbose) cout<<"kill contention abort!"<<endl;
       // If you get here, then the slot was claimed, and its time to abort the entire transaction
       return false;
     }
@@ -875,7 +876,7 @@ public: // all public for now
 	  return true; // doesn't need to update bin id
 	}
       }
-      cout<<"kill contention abort!"<<endl;
+      if (verbose) cout<<"kill contention abort!"<<endl;
       // If you get here, then the slot was claimed, and its time to abort the entire transaction
       return false;
     }
@@ -889,7 +890,7 @@ public: // all public for now
 	  return true;  // doesn't need to update bin id
 	}
       }
-      cout<<"kill contention abort!"<<endl;
+      if (verbose) cout<<"kill contention abort!"<<endl;
       // If you get here, then the slot was claimed, and its time to abort the entire transaction
       return false;
     }
@@ -1051,7 +1052,7 @@ public: // all public for now
       // commit phase
       bool aborted = false;
       if (claim_contention_abort) {
-	cout<<"Claim contention abort!"<<endl;
+	if (verbose) cout<<"Claim contention abort!"<<endl;
 	aborted = true;
 	abort_unsorted_writeset(write_set);
       } else {
@@ -1084,7 +1085,7 @@ public: // all public for now
   // Tests that everything went through hash table like it was supposed to
   bool end_test(int total_inserts, int total_aborts) { // just to check for bugs in program
     // Now to test that everything went correctly
-    cout<<"Total aborts: "<<total_aborts<<endl;
+    if (verbose) cout<<"Total aborts: "<<total_aborts<<endl;
     int missing_count = 0;
     int positions_needed = total_inserts;
     for(int x=0; x<bin_num; x++) {
@@ -1201,11 +1202,54 @@ int getmax(vector<int> array) {
   return answer;
 }
 
+void run_all_tests() {
+  srand (time(NULL)); //Initialize random seed
+  bool cyclekick;
+  balance = true;
+  cyclekick = true;
+  bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
+  bool live_kickout = true; // whether or not to do kickout chains as system transaction
+  for (int load_type = 0; load_type <= 1; load_type++) {
+    if (load_type == 0) {
+      inserts_per_kill = 2;
+      inserts_per_read = 1;
+      inserts_per_overwrite = 1;
+    } else {
+      inserts_per_kill = (1 << 27);
+      inserts_per_read = 1;
+      inserts_per_overwrite = 1;
+    }
+    cout<<" bin size: "<<bin_size
+	<<" bin number: "<<bin_num
+	<<" threads: "<<threads
+	<<" inserts per kill: "<<inserts_per_kill
+	<<" inserts per read: "<<inserts_per_read
+	<<" inserts per overwrite "<<inserts_per_overwrite
+	<<" batching: "<<batch
+	<<" trials: "<<trial_num
+	<<" max chain: "<<maxchain
+	<<" balance on: "<<balance<<endl;
+    cout<<"Init_fill average_number_of_aborts_per_trial"<<endl;
+    for (init_fill = .6; init_fill < .96; init_fill += .01) {
+      vector <int> aborts(trial_num);
+      for (int trial=0; trial < trial_num; trial++) {
+	cuckoo_table *table1 = new cuckoo_table();
+	table1->cyclekick = cyclekick;
+	aborts[trial] = table1->run();
+	delete table1;
+      }
+      cout<<init_fill<<" "<<getav(aborts)<<endl;
+    }
+    cout<<endl;
+  }
+}
 
 
 int main() {
-  //srand (time(NULL)); //Initialize random seed
-  srand (0); //Initialize random seed
+  run_all_tests();
+  return 0;
+  srand (time(NULL)); //Initialize random seed
+  //srand (0); //Initialize random seed
   for(int type = only_cycle; type < 2; type++) {
     cout<<"----------"<<endl;
     vector <int> aborts(trial_num);
