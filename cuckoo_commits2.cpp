@@ -1209,16 +1209,22 @@ void run_all_tests() {
   cyclekick = true;
   bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
   bool live_kickout = true; // whether or not to do kickout chains as system transaction
+  string file_name = "parallel_data_5";
   for (int load_type = 0; load_type <= 1; load_type++) {
+    string file_name2 = file_name;
     if (load_type == 0) {
+      file_name2 += "_delete_heavy.dat";
       inserts_per_kill = 2;
       inserts_per_read = 1;
       inserts_per_overwrite = 1;
     } else {
+      file_name2 += "_delete_light.dat";
       inserts_per_kill = (1 << 27);
       inserts_per_read = 1;
       inserts_per_overwrite = 1;
     }
+    ofstream file(file_name2);
+    if (!file.is_open()) cout<<"File issue!"<<endl;
     cout<<" bin size: "<<bin_size
 	<<" bin number: "<<bin_num
 	<<" threads: "<<threads
@@ -1230,7 +1236,7 @@ void run_all_tests() {
 	<<" max chain: "<<maxchain
 	<<" balance on: "<<balance<<endl;
     cout<<"Init_fill average_number_of_aborts_per_trial"<<endl;
-    for (init_fill = .6; init_fill < .96; init_fill += .01) {
+    for (init_fill = .6; init_fill < .96; init_fill += .05) {
       vector <int> aborts(trial_num);
       for (int trial=0; trial < trial_num; trial++) {
 	cuckoo_table *table1 = new cuckoo_table();
@@ -1239,8 +1245,10 @@ void run_all_tests() {
 	delete table1;
       }
       cout<<init_fill<<" "<<getav(aborts)<<endl;
+      file<<init_fill<<" "<<getav(aborts)<<endl;
     }
     cout<<endl;
+    file<<endl;
   }
 }
 

@@ -961,41 +961,63 @@ void run_all_tests() {
   srand (time(NULL)); //Initialize random seed
   bool cyclekick;
   balance = true;
-  for (int table_type = 0; table_type < 4; table_type++) {
+  // Seems like running this test individually for each
+  // case of for loop may be necessarily because I'm screwing
+  // up the collection of threads somehow so that I run out of
+  // resourses...
+  for (int table_type = 0; table_type < 5; table_type++) {
+    string file_name;
     switch ( table_type ) {
     case 0:
+      file_name = "parallel_data_1"; 
       cyclekick = false;
       retry_on = false;
       live_kickout = false;
       break;
     case 1:
+      file_name = "parallel_data_2"; 
       cyclekick = false;
       retry_on = true;
       live_kickout = false;
       break;
     case 2:
+      file_name = "parallel_data_3"; 
       cyclekick = true;
       retry_on = true;
       live_kickout = false;
       break;
     case 3:
+      file_name = "parallel_data_4"; 
       cyclekick = true;
       retry_on = true;
       live_kickout = true;
       break;
+    case 4:
+      // Shows case where we use live kickout with cyclekick or claims. Actually makes things worse!
+      file_name = "parallel_data_extra_test"; 
+      cyclekick = false;
+      retry_on = true;
+      live_kickout = true;
+      break;
     default:
+      file_name = "THISFILESHOULDNOTEXIST";
       break;
     }
     for (int load_type = 0; load_type <= 1; load_type++) {
+      string file_name2;
       if (load_type == 0) {
+	file_name2 = file_name + "_delete_heavy.dat";
 	inserts_per_kill = 2;
 	inserts_per_read = 1;
 	inserts_per_overwrite = 1;
       } else {
+	file_name2 = file_name + "_delete_light.dat";
 	inserts_per_kill = (1 << 27);
 	inserts_per_read = 1;
 	inserts_per_overwrite = 1;
       }
+      ofstream file(file_name2);
+      if (!file.is_open()) cout<<"File issue!"<<endl;
       cout<<" bin size: "<<bin_size
 	  <<" bin number: "<<bin_num
 	  <<" threads: "<<threads
@@ -1008,7 +1030,7 @@ void run_all_tests() {
 	  <<" balance on: "<<balance
 	  <<" cycle-kick on: "<<cyclekick<<endl;
       cout<<"Init_fill average_number_of_aborts_per_trial"<<endl;
-      for (init_fill = .6; init_fill < .96; init_fill += .01) {
+      for (init_fill = .6; init_fill < .96; init_fill += .05) {
 	vector <int> aborts(trial_num);
 	for (int trial=0; trial < trial_num; trial++) {
 	  cuckoo_table *table1 = new cuckoo_table();
@@ -1017,8 +1039,10 @@ void run_all_tests() {
 	  delete table1;
 	}
 	cout<<init_fill<<" "<<getav(aborts)<<endl;
+	file<<init_fill<<" "<<getav(aborts)<<endl;
       }
       cout<<endl;
+      file<<endl;
     }
   }
 }
