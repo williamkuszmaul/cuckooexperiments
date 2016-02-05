@@ -13,6 +13,18 @@
 #include <unistd.h>
 using namespace std;
 
+// Note: Currently, the run-all-tests function runs one test at a time,
+// and you have to manually change the settings for each test. Of course,
+// if this becomes at all inconvenient, it's easy to change (You can even
+// basically copy the for loop from cuckoo_commits.cpp). Note, however,
+// that some sort of failure to free recourses is making things crash if
+// we run too many experiments in a row (at least in cuckoo_commits.cpp). I
+// will fix that when I get a chance.
+
+// Note on whether # cores matters: Number of cores should mostly
+// not affect number of aborts. In particular, when threads run round
+// robin, they are essentially running in parallel for our purposes.
+
 // Things that can be confusing:
 // With retry off, why are there aborts even when doing only inserts on a single thread?
 //   Answer: Because the system transaction kickout change may change a bin id!
