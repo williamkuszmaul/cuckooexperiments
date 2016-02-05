@@ -1206,10 +1206,10 @@ void run_all_tests() {
   srand (time(NULL)); //Initialize random seed
   bool cyclekick;
   balance = true;
-  cyclekick = true;
+  cyclekick = false;
   bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
-  bool live_kickout = true; // whether or not to do kickout chains as system transaction
-  string file_name = "parallel_data_5";
+  bool live_kickout = false; // whether or not to do kickout chains as system transaction
+  string file_name = "parallel_data_6";
   for (int load_type = 0; load_type <= 1; load_type++) {
     string file_name2 = file_name;
     if (load_type == 0) {

@@ -1030,7 +1030,7 @@ void run_all_tests() {
 	  <<" balance on: "<<balance
 	  <<" cycle-kick on: "<<cyclekick<<endl;
       cout<<"Init_fill average_number_of_aborts_per_trial"<<endl;
-      for (init_fill = .6; init_fill < .96; init_fill += .05) {
+      for (init_fill = .60; init_fill < .96; init_fill += .05) {
 	vector <int> aborts(trial_num);
 	for (int trial=0; trial < trial_num; trial++) {
 	  cuckoo_table *table1 = new cuckoo_table();
