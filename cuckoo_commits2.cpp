@@ -37,7 +37,7 @@ uint64_t maxchain = 500;
 bool balance = true;
 int only_cycle = 0; // 0 to run both with and without cycle-kick, 1 to run just cyclekick
 bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
-bool live_kickout = true; // whether or not to do kickout chains as system transaction
+bool live_kickout = false; // whether or not to do kickout chains as system transaction
 int overcount_factor = 10;
 bool verbose = false;
 #define klockflag (((uint64_t)1)<<31)
@@ -1207,8 +1207,6 @@ void run_all_tests() {
   bool cyclekick;
   balance = true;
   cyclekick = false;
-  bool retry_on = true; // whether or not to do retries of verifications that a record _isn't_ present
-  bool live_kickout = false; // whether or not to do kickout chains as system transaction
   string file_name = "parallel_data_6";
   for (int load_type = 0; load_type <= 1; load_type++) {
     string file_name2 = file_name;
